@@ -832,6 +832,18 @@ fun HomeScreen(
         else -> null
     }
 
+    var isTrailerPlaying by remember { mutableStateOf(false) }
+    var trailerSuppressed by remember { mutableStateOf(false) }
+    LaunchedEffect(displayHeroItem?.id) { trailerSuppressed = false }
+    val trailerOverlayAlpha = remember { Animatable(1f) }
+    LaunchedEffect(isTrailerPlaying) {
+        if (isTrailerPlaying) {
+            trailerOverlayAlpha.animateTo(0f, tween(1500, easing = FastOutSlowInEasing))
+        } else {
+            trailerOverlayAlpha.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
+        }
+    }
+
     var heroPlaybackHandles by remember { mutableStateOf<HomeHeroPlaybackHandles?>(null) }
     var preparedHeroVideoUrl by remember { mutableStateOf<String?>(null) }
     val heroExoPlayer = heroPlaybackHandles?.player
@@ -990,10 +1002,12 @@ fun HomeScreen(
                 }
 
                 // YouTube trailer auto-play (sound controlled by trailerSoundEnabled setting)
-                if (heroVideoUrl == null && uiState.trailerAutoPlay && uiState.heroTrailerKey != null) {
+                if (heroVideoUrl == null && uiState.trailerAutoPlay && uiState.heroTrailerKey != null && !trailerSuppressed) {
                     TrailerPlayer(
                         youtubeKey = uiState.heroTrailerKey!!,
+                        delayMs = uiState.trailerDelaySeconds * 1000L,
                         volume = if (uiState.trailerSoundEnabled) 1f else 0f,
+                        onPlayingChanged = { playing -> isTrailerPlaying = playing },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1060,6 +1074,7 @@ fun HomeScreen(
             }
         } // end if (!isMobile) backdrop
         
+        Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = trailerOverlayAlpha.value }) {
         HomeInputLayer(
             categories = displayCategories,
             cardLogoUrls = cardLogoUrls,
@@ -1070,6 +1085,8 @@ fun HomeScreen(
             fastScrollThresholdMs = fastScrollThresholdMs,
             usePosterCards = usePosterCards,
             isContextMenuOpen = showContextMenu,
+            trailerIsPlaying = isTrailerPlaying,
+            onTrailerStop = { trailerSuppressed = true },
             isMobile = isMobile,
             heroItem = displayHeroItem,
             heroOverviewOverride = displayHeroOverview,
@@ -1116,8 +1133,10 @@ fun HomeScreen(
                 showContextMenu = true
             }
         )
+        } // end trailer-dim wrapper
 
         if (showCinematicHomeLayer) {
+            Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = trailerOverlayAlpha.value }) {
             HomeHeroLayer(
                 heroItem = displayHeroItem,
                 heroLogoUrl = displayHeroLogo,
@@ -1131,6 +1150,7 @@ fun HomeScreen(
                 getIptvChannelId = { item -> viewModel.getIptvChannelId(item) },
                 getIptvStreamUrl = { itemId -> viewModel.getIptvStreamUrl(itemId) }
             )
+            } // end trailer-dim wrapper
         }
 
         // Error state - show message when loading failed and no content
@@ -2190,6 +2210,8 @@ private fun HomeInputLayer(
     fastScrollThresholdMs: Long,
     usePosterCards: Boolean,
     isContextMenuOpen: Boolean,
+    trailerIsPlaying: Boolean = false,
+    onTrailerStop: () -> Unit = {},
     isMobile: Boolean = false,
     heroItem: MediaItem? = null,
     heroOverviewOverride: String? = null,
@@ -2312,6 +2334,12 @@ private fun HomeInputLayer(
         Modifier.onPreviewKeyEvent { event ->
             if (isContextMenuOpen) {
                 return@onPreviewKeyEvent false
+            }
+            if (trailerIsPlaying && event.type == KeyEventType.KeyDown &&
+                (isArvioDpadNavigationKey(event.key) || event.key == Key.Enter || event.key == Key.DirectionCenter || event.key == Key.Back)
+            ) {
+                onTrailerStop()
+                return@onPreviewKeyEvent true
             }
             if (event.type == KeyEventType.KeyUp && isArvioDpadNavigationKey(event.key)) {
                 dpadRepeatGate.reset()

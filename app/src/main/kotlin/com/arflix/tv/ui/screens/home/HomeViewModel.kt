@@ -78,6 +78,7 @@ data class HomeUiState(
     val heroTrailerKey: String? = null,
     val trailerAutoPlay: Boolean = false,
     val trailerSoundEnabled: Boolean = false,
+    val trailerDelaySeconds: Int = 2,
     // Home hero metadata visibility toggles (issue #72)
     val showBudget: Boolean = true,
     val heroOverviewOverride: String? = null,
@@ -133,6 +134,7 @@ class HomeViewModel @Inject constructor(
     private val apkDownloader: com.arflix.tv.updater.ApkDownloader,
     private val updatePreferences: com.arflix.tv.updater.UpdatePreferences,
     private val updateStatusManager: com.arflix.tv.updater.UpdateStatusManager,
+    private val youTubeExtractor: com.arflix.tv.data.api.InAppYouTubeExtractor,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val imageLoader: ImageLoader by lazy(LazyThreadSafetyMode.NONE) {
@@ -1087,9 +1089,13 @@ class HomeViewModel @Inject constructor(
                 val trailerSoundEnabled = prefs.asMap().entries
                     .firstOrNull { (key, _) -> key.name.endsWith("_trailer_sound_enabled") }
                     ?.value as? Boolean ?: false
+                val trailerDelaySeconds = (prefs.asMap().entries
+                    .firstOrNull { (key, _) -> key.name.endsWith("_trailer_delay_seconds") }
+                    ?.value as? String)?.toIntOrNull() ?: 2
                 _uiState.value = _uiState.value.copy(
                     trailerAutoPlay = trailerEnabled,
                     trailerSoundEnabled = trailerSoundEnabled,
+                    trailerDelaySeconds = trailerDelaySeconds,
                     showBudget = showBudget,
                     clockFormat = clockFormat
                 )
@@ -3288,15 +3294,17 @@ class HomeViewModel @Inject constructor(
             return
         }
 
-        // Always fetch trailer for new hero item
-        if (_uiState.value.trailerAutoPlay) {
-            // Clear previous trailer immediately
+        // Fetch trailer for new hero item; skip if already loaded for this item (prevents restart mid-play)
+        if (_uiState.value.trailerAutoPlay &&
+            !(_uiState.value.heroItem?.id == item.id && _uiState.value.heroTrailerKey != null)
+        ) {
             _uiState.value = _uiState.value.copy(heroTrailerKey = null)
             viewModelScope.launch(networkDispatcher) {
                 try {
                     val trailerKey = mediaRepository.getTrailerKey(item.mediaType, item.id)
                     if (trailerKey != null && _uiState.value.heroItem?.id == item.id) {
                         _uiState.value = _uiState.value.copy(heroTrailerKey = trailerKey)
+                        prefetchTrailerUrl(trailerKey)
                     }
                 } catch (_: Exception) {}
             }
@@ -3366,6 +3374,7 @@ class HomeViewModel @Inject constructor(
                     val trailerKey = mediaRepository.getTrailerKey(item.mediaType, item.id)
                     if (trailerKey != null && _uiState.value.heroItem?.id == item.id) {
                         _uiState.value = _uiState.value.copy(heroTrailerKey = trailerKey)
+                        prefetchTrailerUrl(trailerKey)
                     }
                 } catch (_: Exception) {}
             } catch (_: Exception) {
@@ -3373,17 +3382,28 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun prefetchTrailerUrl(trailerKey: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                youTubeExtractor.extractPlaybackSource("https://www.youtube.com/watch?v=$trailerKey")
+            }
+        }
+    }
+
     private fun scheduleHeroDetailsFetch(item: MediaItem, fastScrolling: Boolean) {
         heroDetailsJob?.cancel()
 
-        // Always fetch trailer for new hero item (separate from details cache)
-        if (_uiState.value.trailerAutoPlay) {
+        // Fetch trailer for new hero item; skip if already loaded for this item (prevents restart mid-play)
+        if (_uiState.value.trailerAutoPlay &&
+            !(_uiState.value.heroItem?.id == item.id && _uiState.value.heroTrailerKey != null)
+        ) {
             _uiState.value = _uiState.value.copy(heroTrailerKey = null)
             viewModelScope.launch(networkDispatcher) {
                 try {
                     val trailerKey = mediaRepository.getTrailerKey(item.mediaType, item.id)
                     if (trailerKey != null && _uiState.value.heroItem?.id == item.id) {
                         _uiState.value = _uiState.value.copy(heroTrailerKey = trailerKey)
+                        prefetchTrailerUrl(trailerKey)
                     }
                 } catch (_: Exception) {}
             }
