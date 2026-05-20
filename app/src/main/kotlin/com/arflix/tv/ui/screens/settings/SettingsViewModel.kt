@@ -1772,6 +1772,14 @@ class SettingsViewModel @Inject constructor(
 
             iptvLoadJob = launch {
             _uiState.value = _uiState.value.copy(isIptvLoading = true, iptvError = null)
+            // When the user explicitly forces a refresh (Settings → Refresh
+            // IPTV), nuke every IPTV-side cache before reloading so the
+            // snapshot + warm-up below go all the way back to the provider.
+            // Auto-triggered refreshes (force=false) keep their soft TTL
+            // behavior.
+            if (force) {
+                runCatching { iptvRepository.purgeAllIptvSourceCaches() }
+            }
             runCatching {
                 val snapshot = iptvRepository.loadSnapshot(
                     forcePlaylistReload = force,
