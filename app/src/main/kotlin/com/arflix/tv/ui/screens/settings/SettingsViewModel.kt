@@ -2899,6 +2899,7 @@ private fun IptvConfig.syncSignature(): String {
                 playlist.name,
                 playlist.m3uUrl,
                 playlist.epgUrl,
+                playlist.epgUrls.orEmpty().joinToString(","),
                 playlist.enabled.toString()
             ).joinToString("~")
         }

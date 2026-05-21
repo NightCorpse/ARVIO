@@ -148,6 +148,7 @@ import com.arflix.tv.data.model.QualityFilterConfig
 import com.arflix.tv.data.model.RuntimeKind
 import com.arflix.tv.data.repository.HomeServerConnection
 import com.arflix.tv.data.repository.HomeServerKind
+import com.arflix.tv.data.repository.IptvPlaylistEntry
 import com.arflix.tv.ui.components.AppTopBar
 import com.arflix.tv.ui.components.AppTopBarContentTopInset
 import com.arflix.tv.ui.components.CatalogueRowLayoutToggleButton
@@ -568,7 +569,7 @@ fun SettingsScreen(
                 iptvEditXtreamUser = ""
                 iptvEditXtreamPass = ""
             }
-            iptvEditEpg = playlist?.epgUrl ?: ""
+            iptvEditEpg = playlist?.settingsEpgInput().orEmpty()
             iptvEditEnabled = playlist?.enabled ?: true
         }
     }
@@ -1512,9 +1513,10 @@ fun SettingsScreen(
                         onValueChange = { iptvEditXtreamPass = it }
                     ),
                     InputField(
-                        label = "EPG URL (Optional)",
+                        label = "EPG URLs (Optional)",
                         value = iptvEditEpg,
-                        placeholder = "Leave empty to auto-derive for Xtream",
+                        placeholder = "One per line, comma or semicolon separated",
+                        singleLine = false,
                         onValueChange = { iptvEditEpg = it }
                     )
                 ),
@@ -1538,7 +1540,8 @@ fun SettingsScreen(
                         name = iptvEditName,
                         m3uUrl = finalM3uUrl,
                         epgUrl = finalEpgUrl,
-                        enabled = iptvEditEnabled
+                        enabled = iptvEditEnabled,
+                        epgUrls = splitSettingsEpgInput(finalEpgUrl)
                     )
                     if (editingIptvIndex in updated.indices) updated[editingIptvIndex] = entry else updated.add(entry)
                     viewModel.saveIptvPlaylists(updated)
@@ -4237,7 +4240,7 @@ private fun tvSettingsPanelFacts(
         "iptv" -> listOf(
             "Playlists" to "${uiState.iptvPlaylists.size}/3",
             "Channels" to formatCompactCount(uiState.iptvChannelCount),
-            "EPG" to if (uiState.iptvPlaylists.any { it.epgUrl.isNotBlank() }) "Configured" else "Optional",
+            "EPG" to if (uiState.iptvPlaylists.any { it.epgUrl.isNotBlank() || it.epgUrls.orEmpty().isNotEmpty() }) "Configured" else "Optional",
             "State" to if (uiState.isIptvLoading) "Refreshing" else "Ready"
         )
         "home_server" -> listOf(
@@ -5554,6 +5557,9 @@ private fun IptvSettings(
         playlists.forEachIndexed { index, playlist ->
             val rowIndex = index + 1
             val isSelected = selectedIndices.contains(index)
+            val epgSourceCount = playlist.settingsEpgInput()
+                .lineSequence()
+                .count { it.isNotBlank() }
             Row(
                 modifier = Modifier
                     .settingsFocusSlot(rowIndex)
@@ -5608,7 +5614,13 @@ private fun IptvSettings(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = playlist.m3uUrl.take(56),
+                        text = buildString {
+                            append(playlist.m3uUrl.take(56))
+                            when {
+                                epgSourceCount > 1 -> append(" • $epgSourceCount EPGs")
+                                epgSourceCount == 1 -> append(" • EPG")
+                            }
+                        },
                         style = ArflixTypography.caption,
                         color = TextSecondary.copy(alpha = 0.72f),
                         maxLines = 1,
@@ -5691,7 +5703,7 @@ private fun IptvSettings(
         val refreshSubtitle = when {
             isLoading -> "Refreshing channels and EPG..."
             error != null -> error
-            playlists.none { it.epgUrl.isNotBlank() } -> "Reload playlists now"
+            playlists.none { it.epgUrl.isNotBlank() || it.epgUrls.orEmpty().isNotEmpty() } -> "Reload playlists now"
             else -> "Reload playlist and EPG now"
         }
         SettingsRow(
@@ -7766,8 +7778,25 @@ data class InputField(
     val value: String,
     val placeholder: String = "",
     val isSecret: Boolean = false,
+    val singleLine: Boolean = true,
     val onValueChange: (String) -> Unit
 )
+
+private fun IptvPlaylistEntry.settingsEpgInput(): String {
+    return (epgUrls.orEmpty().ifEmpty { listOf(epgUrl) })
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .joinToString("\n")
+}
+
+private fun splitSettingsEpgInput(raw: String): List<String> {
+    return raw
+        .split('\n', '\r', ',', ';', '|')
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+}
 
 /**
  * Input modal for text entry (custom addon URL, API keys, etc.)
@@ -8311,7 +8340,10 @@ private fun InputModal(
                                             textSize = 16f
                                             background = null
                                             setPadding(20, 14, 20, 14)
-                                            isSingleLine = true
+                                            isSingleLine = field.singleLine
+                                            setHorizontallyScrolling(field.singleLine)
+                                            minLines = if (field.singleLine) 1 else 3
+                                            maxLines = if (field.singleLine) 1 else 5
                                             isFocusable = true
                                             isFocusableInTouchMode = true
 
@@ -8324,9 +8356,11 @@ private fun InputModal(
                                             inputType = if (isPasswordField) {
                                                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                                             } else if (isLikelyUrlField) {
-                                                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                                                (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI) or
+                                                    if (field.singleLine) 0 else InputType.TYPE_TEXT_FLAG_MULTI_LINE
                                             } else {
-                                                InputType.TYPE_CLASS_TEXT
+                                                InputType.TYPE_CLASS_TEXT or
+                                                    if (field.singleLine) 0 else InputType.TYPE_TEXT_FLAG_MULTI_LINE
                                             }
                                             if (isPasswordField) {
                                                 transformationMethod = PasswordTransformationMethod.getInstance()
