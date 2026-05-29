@@ -68,6 +68,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -888,7 +889,19 @@ fun LiveTvScreen(
                 val prepared = lastPreparedStreamUrl ?: return
                 val nextAttempt = playerRetryCount + 1
                 playerRetryCount = nextAttempt
-                if (nextAttempt > 3) {
+                val retryChannel = playingChannel?.source
+                val retryProgram = playingCatchupProgram
+                val catchupCandidateCount = if (retryChannel != null && retryProgram != null) {
+                    viewModel.iptvRepository.getCatchupUrlCandidates(retryChannel, retryProgram).size
+                } else {
+                    0
+                }
+                val maxRetryCount = if (retryProgram != null && catchupCandidateCount > 1) {
+                    maxOf(3, (catchupCandidateCount - 1).coerceAtMost(8))
+                } else {
+                    3
+                }
+                if (nextAttempt > maxRetryCount) {
                     playbackDiagnostic = PlaybackDiagnostic(
                         title = "Playback failed",
                         detail = "${error.errorCodeName}: ${classifyPlaybackError(error)}",
@@ -896,12 +909,12 @@ fun LiveTvScreen(
                     )
                     System.err.println(
                         "[IPTV] Live playback failed after retries code=${error.errorCode} " +
-                            "name=${error.errorCodeName} url=${prepared.take(180)}"
+                            "name=${error.errorCodeName} status=${httpResponseCode(error) ?: "-"} " +
+                            "attempts=$maxRetryCount candidates=$catchupCandidateCount " +
+                            "url=${redactPlaybackUrl(prepared)}"
                     )
                     return
                 }
-                val retryChannel = playingChannel?.source
-                val retryProgram = playingCatchupProgram
                 val retryHeaders = retryChannel?.requestHeaders ?: lastPreparedHeaders
                 coroutineScope.launch {
                     delay(350L * nextAttempt)
@@ -917,11 +930,12 @@ fun LiveTvScreen(
                     }
                     System.err.println(
                         "[IPTV] Retrying live playback attempt=$nextAttempt " +
-                            "code=${error.errorCodeName} url=${retryStream.take(180)}"
+                            "code=${error.errorCodeName} status=${httpResponseCode(error) ?: "-"} " +
+                            "candidates=$catchupCandidateCount url=${redactPlaybackUrl(retryStream)}"
                     )
                     playbackDiagnostic = PlaybackDiagnostic(
                         title = "Retrying source",
-                        detail = "Attempt $nextAttempt/3 after ${classifyPlaybackError(error)}",
+                        detail = "Attempt $nextAttempt/$maxRetryCount after ${classifyPlaybackError(error)}",
                         severity = PlaybackDiagnosticSeverity.Warning,
                     )
                     prepareStream(retryStream, retryHeaders, resetRetry = false)
@@ -1472,6 +1486,7 @@ data class EnrichedChannels(
 }
 
 private fun classifyPlaybackError(error: PlaybackException): String {
+    httpResponseCode(error)?.let { return "provider returned HTTP $it" }
     val name = error.errorCodeName.lowercase()
     return when {
         "timeout" in name -> "network timeout"
@@ -1480,6 +1495,29 @@ private fun classifyPlaybackError(error: PlaybackException): String {
         "decoder" in name || "audio" in name || "video" in name -> "device codec issue"
         else -> "source did not start"
     }
+}
+
+private fun httpResponseCode(error: PlaybackException): Int? {
+    var cause: Throwable? = error
+    while (cause != null) {
+        if (cause is HttpDataSource.InvalidResponseCodeException) {
+            return cause.responseCode
+        }
+        cause = cause.cause
+    }
+    return null
+}
+
+private fun redactPlaybackUrl(url: String): String {
+    val withoutQuerySecrets = Regex(
+        pattern = """(?i)([?&](?:username|user|uname|password|pass|pwd)=)[^&]+"""
+    ).replace(url) { match -> "${match.groupValues[1]}***" }
+
+    return Regex("""(?i)(/(?:live|movie|series|timeshift)/)([^/]+)/([^/]+)(/)""")
+        .replace(withoutQuerySecrets) { match ->
+            "${match.groupValues[1]}***/***${match.groupValues[4]}"
+        }
+        .take(260)
 }
 
 private tailrec fun Context.findActivity(): Activity? {

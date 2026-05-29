@@ -699,46 +699,67 @@ class IptvRepository @Inject constructor(
     fun getCatchupUrlCandidates(channel: IptvChannel, program: IptvProgram): List<String> {
         val startUnix = program.startUtcMillis / 1000L
         val endUnix = program.endUtcMillis / 1000L
+        val nowUnix = System.currentTimeMillis() / 1000L
         val durationMin = ((program.endUtcMillis - program.startUtcMillis) / 60_000L).coerceAtLeast(1L)
+        val creds = resolveXtreamCredentials(channel.streamUrl)
+        val streamId = channel.xtreamStreamId ?: resolveXtreamStreamId(channel)
+        val xtreamCandidates = if (creds != null && streamId != null) {
+            buildXtreamCatchupCandidates(creds, streamId, program, durationMin)
+        } else {
+            emptyList()
+        }
 
-        val resolvedType = channel.catchupType?.lowercase(Locale.US)
-            ?: if (resolveXtreamCredentials(channel.streamUrl) != null && resolveXtreamStreamId(channel) != null) "xtream" else "default"
+        val resolvedType = channel.catchupType?.trim()?.lowercase(Locale.US)?.takeIf { it.isNotBlank() }
+            ?: if (xtreamCandidates.isNotEmpty()) "xtream" else "default"
 
+        val sourceTemplate = channel.catchupSource?.takeIf { it.isNotBlank() }
+        val serverStartMs = creds?.let { program.startUtcMillis + getServerOffset(it) } ?: program.startUtcMillis
         val candidates = when (resolvedType) {
             "xtream", "xc", "xciptv", "timeshift" -> {
-                val creds = resolveXtreamCredentials(channel.streamUrl) ?: return listOf(channel.streamUrl)
-                val streamId = channel.xtreamStreamId ?: resolveXtreamStreamId(channel) ?: return listOf(channel.streamUrl)
-                val offset = getServerOffset(creds)
-                val serverStartMs = program.startUtcMillis + offset
-                val startDt = LocalDateTime.ofInstant(Instant.ofEpochMilli(serverStartMs), ZoneId.of("UTC"))
-                val startStr = startDt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd:HH-mm"))
                 buildList {
-                    channel.catchupSource?.takeIf { it.isNotBlank() }?.let {
-                        add(applyCatchupSourceTemplate(channel, it, program, serverStartMs, startUnix, endUnix, durationMin))
+                    sourceTemplate?.let {
+                        add(applyCatchupSourceTemplate(channel, it, program, serverStartMs, startUnix, endUnix, nowUnix, durationMin))
                     }
-                    add(buildXtreamTimeshiftPathUrl(creds, streamId, startStr, durationMin))
-                    add(buildXtreamTimeshiftQueryUrl(creds, streamId, startStr, durationMin, includeStreamingPrefix = true))
-                    add(buildXtreamTimeshiftQueryUrl(creds, streamId, startStr, durationMin, includeStreamingPrefix = false))
+                    addAll(xtreamCandidates)
                 }
             }
             "flussonic", "ts" -> {
                 val connector = if (channel.streamUrl.contains("?")) "&" else "?"
-                listOf("${channel.streamUrl}${connector}utc=$startUnix")
+                buildList {
+                    sourceTemplate?.let {
+                        add(applyCatchupSourceTemplate(channel, it, program, program.startUtcMillis, startUnix, endUnix, nowUnix, durationMin))
+                    }
+                    add("${channel.streamUrl}${connector}utc=$startUnix")
+                    addAll(xtreamCandidates)
+                }
             }
             "append", "shift" -> {
                 val connector = if (channel.streamUrl.contains("?")) "&" else "?"
-                listOf("${channel.streamUrl}${connector}utc=$startUnix&lutc=$endUnix")
+                buildList {
+                    sourceTemplate?.let {
+                        add(applyCatchupSourceTemplate(channel, it, program, program.startUtcMillis, startUnix, endUnix, nowUnix, durationMin))
+                    }
+                    add("${channel.streamUrl}${connector}utc=$startUnix&lutc=$nowUnix")
+                    addAll(xtreamCandidates)
+                }
             }
             "default", "source" -> {
-                val source = channel.catchupSource ?: return listOf(channel.streamUrl)
-                listOf(applyCatchupSourceTemplate(channel, source, program, program.startUtcMillis, startUnix, endUnix, durationMin))
+                buildList {
+                    sourceTemplate?.let {
+                        add(applyCatchupSourceTemplate(channel, it, program, serverStartMs, startUnix, endUnix, nowUnix, durationMin))
+                    }
+                    addAll(xtreamCandidates)
+                    if (isEmpty()) add(channel.streamUrl)
+                }
             }
             else -> {
                 // If catchup-source is present but type is unknown, try placeholder replacement anyway
-                if (!channel.catchupSource.isNullOrBlank()) {
-                    listOf(applyCatchupSourceTemplate(channel, channel.catchupSource, program, program.startUtcMillis, startUnix, endUnix, durationMin))
-                } else {
-                    listOf(channel.streamUrl)
+                buildList {
+                    sourceTemplate?.let {
+                        add(applyCatchupSourceTemplate(channel, it, program, serverStartMs, startUnix, endUnix, nowUnix, durationMin))
+                    }
+                    addAll(xtreamCandidates)
+                    if (isEmpty()) add(channel.streamUrl)
                 }
             }
         }
@@ -750,6 +771,36 @@ class IptvRepository @Inject constructor(
             .toList()
     }
 
+    private fun buildXtreamCatchupCandidates(
+        creds: XtreamCredentials,
+        streamId: Int,
+        program: IptvProgram,
+        durationMin: Long
+    ): List<String> {
+        val serverStartMs = program.startUtcMillis + getServerOffset(creds)
+        val minutePattern = DateTimeFormatter.ofPattern("yyyy-MM-dd:HH-mm")
+        val secondPattern = DateTimeFormatter.ofPattern("yyyy-MM-dd:HH-mm-ss")
+        val starts = listOf(
+            formatUtcDateTime(serverStartMs, minutePattern),
+            formatUtcDateTime(program.startUtcMillis, minutePattern),
+            formatUtcDateTime(serverStartMs, secondPattern),
+            formatUtcDateTime(program.startUtcMillis, secondPattern)
+        ).distinct()
+
+        return buildList {
+            starts.forEach { startStr ->
+                add(buildXtreamTimeshiftPathUrl(creds, streamId, startStr, durationMin, extension = "ts"))
+                add(buildXtreamTimeshiftQueryUrl(creds, streamId, startStr, durationMin, includeStreamingPrefix = true))
+                add(buildXtreamTimeshiftQueryUrl(creds, streamId, startStr, durationMin, includeStreamingPrefix = false))
+                add(buildXtreamTimeshiftPathUrl(creds, streamId, startStr, durationMin, extension = "m3u8"))
+            }
+        }.distinct()
+    }
+
+    private fun formatUtcDateTime(epochMs: Long, formatter: DateTimeFormatter): String {
+        return LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMs), ZoneId.of("UTC")).format(formatter)
+    }
+
     private fun applyCatchupSourceTemplate(
         channel: IptvChannel,
         source: String,
@@ -757,22 +808,32 @@ class IptvRepository @Inject constructor(
         startForDateMs: Long,
         startUnix: Long,
         endUnix: Long,
+        nowUnix: Long,
         durationMin: Long
     ): String {
         val startDt = LocalDateTime.ofInstant(Instant.ofEpochMilli(startForDateMs), ZoneId.of("UTC"))
         val endDt = LocalDateTime.ofInstant(Instant.ofEpochMilli(program.endUtcMillis), ZoneId.of("UTC"))
         val durationSec = ((program.endUtcMillis - program.startUtcMillis) / 1000L).coerceAtLeast(1L)
-        val templated = source
+        val templated = decodeM3uEntities(source)
+            .replaceDurationScalePlaceholders(durationSec)
+            .replaceDatePatternPlaceholders("start", startDt)
+            .replaceDatePatternPlaceholders("end", endDt)
             .replace("{utc}", startUnix.toString())
             .replace("\${start}", startUnix.toString())
             .replace("{start}", startUnix.toString())
-            .replace("{timestamp}", startUnix.toString())
-            .replace("\${timestamp}", startUnix.toString())
-            .replace("{lutc}", endUnix.toString())
+            .replace("\$start", startUnix.toString())
+            .replace("{timestamp}", nowUnix.toString())
+            .replace("\${timestamp}", nowUnix.toString())
+            .replace("\$timestamp", nowUnix.toString())
+            .replace("{lutc}", nowUnix.toString())
+            .replace("\${lutc}", nowUnix.toString())
+            .replace("\$lutc", nowUnix.toString())
             .replace("\${end}", endUnix.toString())
             .replace("{end}", endUnix.toString())
+            .replace("\$end", endUnix.toString())
             .replace("{duration}", durationMin.toString())
             .replace("\${duration}", durationMin.toString())
+            .replace("\$duration", durationMin.toString())
             .replace("{duration_sec}", durationSec.toString())
             .replace("\${duration_sec}", durationSec.toString())
             .replace("{Y}", startDt.format(DateTimeFormatter.ofPattern("yyyy")))
@@ -812,15 +873,50 @@ class IptvRepository @Inject constructor(
         }
     }
 
+    private fun decodeM3uEntities(value: String): String {
+        return value
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&apos;", "'")
+            .replace("&#39;", "'")
+    }
+
+    private fun String.replaceDurationScalePlaceholders(durationSec: Long): String {
+        return Regex("""\$\{duration:(\d+)\}|\{duration:(\d+)\}""").replace(this) { match ->
+            val divisor = (match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
+                ?: match.groupValues.getOrNull(2))
+                ?.toLongOrNull()
+                ?.takeIf { it > 0L }
+                ?: return@replace match.value
+            (durationSec / divisor).coerceAtLeast(1L).toString()
+        }
+    }
+
+    private fun String.replaceDatePatternPlaceholders(key: String, dateTime: LocalDateTime): String {
+        val regex = Regex("""\$\{""" + key + """:([^}]+)\}|\{""" + key + """:([^}]+)\}""")
+        return regex.replace(this) { match ->
+            val pattern = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
+                ?: match.groupValues.getOrNull(2)
+                ?: return@replace match.value
+            if (pattern in setOf("Y", "m", "d", "H", "M", "S")) {
+                return@replace match.value
+            }
+            runCatching { dateTime.format(DateTimeFormatter.ofPattern(pattern)) }
+                .getOrDefault(match.value)
+        }
+    }
+
     private fun buildXtreamTimeshiftPathUrl(
         creds: XtreamCredentials,
         streamId: Int,
         startStr: String,
-        durationMin: Long
+        durationMin: Long,
+        extension: String = "ts"
     ): String {
         val encodedUser = urlEncodePathSegment(creds.username)
         val encodedPass = urlEncodePathSegment(creds.password)
-        return "${creds.baseUrl}/timeshift/$encodedUser/$encodedPass/$durationMin/$startStr/$streamId.ts"
+        return "${creds.baseUrl}/timeshift/$encodedUser/$encodedPass/$durationMin/$startStr/$streamId.$extension"
     }
 
     private fun buildXtreamTimeshiftQueryUrl(
@@ -5102,7 +5198,7 @@ class IptvRepository @Inject constructor(
                 val groupTitle = extractAttr(metadata, "group-title")?.takeIf { it.isNotBlank() } ?: "Uncategorized"
                 val logo = extractAttr(metadata, "tvg-logo")
                 val catchupType = extractAttr(metadata, "catchup")
-                val catchupDays = extractAttr(metadata, "catchup-days")?.toIntOrNull() ?: 0
+                val catchupDays = extractFirstAttr(metadata, "catchup-days", "timeshift")?.toIntOrNull() ?: 0
                 val catchupSource = extractAttr(metadata, "catchup-source")
                 val providerChannelNumber = extractFirstAttr(
                     metadata,
