@@ -1136,12 +1136,12 @@ fun LiveTvScreen(
                     expanded = sidebarExpanded,
                     onSelect = { id -> selectedCategoryId = id },
                     onOpenSearch = { searchOpen = true },
-                    onHideCategory = { groupName ->
+                    onHideCategory = { playlistId, groupName ->
                         selectedCategoryId = "all"
-                        viewModel.toggleHiddenGroup(groupName)
+                        viewModel.toggleHiddenGroup(playlistId, groupName)
                     },
-                    onUnhideCategory = { groupName ->
-                        viewModel.toggleHiddenGroup(groupName)
+                    onUnhideCategory = { playlistId, groupName ->
+                        viewModel.toggleHiddenGroup(playlistId, groupName)
                     },
                     onMoveCategoryUp = { groupName ->
                         viewModel.moveGroupUp(groupName)

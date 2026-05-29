@@ -747,11 +747,20 @@ class TvViewModel @Inject constructor(
     }
 
     fun toggleHiddenGroup(groupName: String) {
+        toggleHiddenGroup(null, groupName)
+    }
+
+    fun toggleHiddenGroup(playlistId: String?, groupName: String) {
         viewModelScope.launch {
-            val config = iptvRepository.observeConfig().first()
-            val activePlaylists = config.playlists.filter { it.enabled }.map { it.id }
-            activePlaylists.forEach { playlistId ->
-                iptvRepository.toggleHiddenGroup(playlistId, groupName)
+            val targetPlaylistId = playlistId?.trim().orEmpty()
+            if (targetPlaylistId.isNotBlank()) {
+                iptvRepository.toggleHiddenGroup(targetPlaylistId, groupName)
+            } else {
+                val config = iptvRepository.observeConfig().first()
+                val activePlaylists = config.playlists.filter { it.enabled }.map { it.id }
+                activePlaylists.forEach { activePlaylistId ->
+                    iptvRepository.toggleHiddenGroup(activePlaylistId, groupName)
+                }
             }
             scheduleIptvCloudSync()
         }

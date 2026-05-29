@@ -91,8 +91,8 @@ fun CategorySidebar(
     expanded: Boolean,
     onSelect: (String) -> Unit,
     onOpenSearch: () -> Unit,
-    onHideCategory: (String) -> Unit = {},
-    onUnhideCategory: (String) -> Unit = {},
+    onHideCategory: (String?, String) -> Unit = { _, _ -> },
+    onUnhideCategory: (String?, String) -> Unit = { _, _ -> },
     onMoveCategoryUp: (String) -> Unit = {},
     onMoveCategoryToTop: (String) -> Unit = {},
     onMoveCategoryDown: (String) -> Unit = {},
@@ -111,7 +111,7 @@ fun CategorySidebar(
     )
     var expandedCountry by rememberSaveable { mutableStateOf<String?>(null) }
     var expandedAll by rememberSaveable { mutableStateOf(false) }
-    var menuForGroup by rememberSaveable { mutableStateOf<String?>(null) }
+    var menuForCategoryId by rememberSaveable { mutableStateOf<String?>(null) }
     val searchFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(focusSearchSignal) {
@@ -230,35 +230,63 @@ fun CategorySidebar(
                         icon = iconFor(cat),
                         active = selectedId == cat.id,
                         expanded = expanded,
-                        showMenu = menuForGroup == cat.playlistGroupName,
+                        showMenu = menuForCategoryId == cat.id,
                         canHide = cat.playlistGroupName != null,
                         canMove = cat.playlistGroupName != null,
                         onFocused = { onTopBoundaryFocusChanged(false) },
                         onLongClick = {
-                            menuForGroup = cat.playlistGroupName
+                            menuForCategoryId = cat.id
                         },
-                        onDismissMenu = { menuForGroup = null },
+                        onDismissMenu = { menuForCategoryId = null },
                         onHide = {
                             val groupName = cat.playlistGroupName ?: return@SidebarRow
-                            menuForGroup = null
-                            onHideCategory(groupName)
+                            menuForCategoryId = null
+                            onHideCategory(cat.playlistId, groupName)
                         },
                         onMoveUp = {
                             val groupName = cat.playlistGroupName ?: return@SidebarRow
-                            menuForGroup = null
+                            menuForCategoryId = null
                             onMoveCategoryUp(groupName)
                         },
                         onMoveToTop = {
                             val groupName = cat.playlistGroupName ?: return@SidebarRow
-                            menuForGroup = null
+                            menuForCategoryId = null
                             onMoveCategoryToTop(groupName)
                         },
                         onMoveDown = {
                             val groupName = cat.playlistGroupName ?: return@SidebarRow
-                            menuForGroup = null
+                            menuForCategoryId = null
                             onMoveCategoryDown(groupName)
                         },
                         onClick = { onSelect(cat.id) },
+                    )
+                }
+            }
+            if (tree.hidden.categories.isNotEmpty()) {
+                item { SectionHeader(tree.hidden.label, expanded) }
+                items(tree.hidden.categories, key = { "hidden:${it.id}" }) { cat ->
+                    SidebarRow(
+                        label = cat.label,
+                        count = cat.count,
+                        icon = Icons.Filled.VisibilityOff,
+                        active = false,
+                        expanded = expanded,
+                        showMenu = menuForCategoryId == "hidden:${cat.id}",
+                        canUnhide = cat.playlistGroupName != null,
+                        onFocused = { onTopBoundaryFocusChanged(false) },
+                        onLongClick = {
+                            menuForCategoryId = "hidden:${cat.id}"
+                        },
+                        onDismissMenu = { menuForCategoryId = null },
+                        onUnhide = {
+                            val groupName = cat.playlistGroupName ?: return@SidebarRow
+                            menuForCategoryId = null
+                            onUnhideCategory(cat.playlistId, groupName)
+                        },
+                        onClick = {
+                            val groupName = cat.playlistGroupName ?: return@SidebarRow
+                            onUnhideCategory(cat.playlistId, groupName)
+                        },
                     )
                 }
             }
