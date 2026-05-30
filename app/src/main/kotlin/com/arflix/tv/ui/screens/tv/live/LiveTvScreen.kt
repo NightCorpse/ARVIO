@@ -799,9 +799,9 @@ fun LiveTvScreen(
                     if (playingChannelId != null) exoPlayer.play()
                     if (currentUiState.isConfigured &&
                         currentUiState.snapshot.channels.isNotEmpty() &&
-                        viewModel.iptvRepository.cachedEpgAgeMs() > 90_000L
+                        viewModel.iptvRepository.cachedEpgAgeMs() > 6 * 60 * 60_000L
                     ) {
-                        viewModel.refresh(force = false, showLoading = false, forceEpg = true)
+                        viewModel.refresh(force = false, showLoading = false, forceEpg = false)
                     }
                 }
                 else -> {}

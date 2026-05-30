@@ -151,13 +151,8 @@ class TvViewModel @Inject constructor(
                 startFullEpgWarmup()
                 startCompleteEpgBackfill()
                 warmXtreamVodCache()
-                val hasPotentialEpg = config.epgUrl.isNotBlank() || config.m3uUrl.contains("get.php", ignoreCase = true) || config.m3uUrl.contains("player_api.php", ignoreCase = true)
                 val needsChannelReload = config.m3uUrl.isNotBlank() && cached.channels.isEmpty()
-                // Only force EPG refresh if cached EPG is older than 2 minutes.
-                // When navigating from Home, EPG was likely just loaded — no need to re-fetch.
                 val epgAgeMs = iptvRepository.cachedEpgAgeMs()
-                val epgIsRecent = epgAgeMs < 120_000L
-                val epgCoverage = epgCoverageRatio(cached)
                 if (needsChannelReload) {
                     // Only situation that still requires a blocking refresh:
                     // there are literally no channels to show.
@@ -614,6 +609,12 @@ class TvViewModel @Inject constructor(
             return
         }
         val hasGuideData = hasAnyEpgData(state.snapshot)
+        val ageMs = iptvRepository.cachedEpgAgeMs()
+        if (!force && hasGuideData && ageMs < 24 * 60 * 60_000L) {
+            setEpgBackfillInProgress(false)
+            System.err.println("[EPG-Complete] Keeping cached guide; age=${ageMs / 1000}s")
+            return
+        }
         if (!force && isLargeIptvList(channels.size) && hasGuideData) {
             completeEpgBackfillJob?.cancel()
             completeEpgBackfillJob = null
@@ -622,7 +623,6 @@ class TvViewModel @Inject constructor(
         }
 
         val coverage = epgCoverageRatio(state.snapshot)
-        val ageMs = iptvRepository.cachedEpgAgeMs()
         val cacheLooksComplete = coverage >= 0.98f && ageMs < 6 * 60 * 60_000L
         if (!force && cacheLooksComplete) return
         if (completeEpgBackfillJob?.isActive == true) return

@@ -240,17 +240,18 @@ class IptvRepository @Inject constructor(
     private val playlistCacheMs = staleAfterMs
     private val epgCacheMs = staleAfterMs
     private val epgEmptyRetryMs = 30_000L
-    private val epgUpcomingProgramLimit = 48
+    private val epgUpcomingProgramLimit = 96
     private val epgRecentProgramLimit = 2
     private val xmlTvPastWindowMs = 48L * 60L * 60_000L
-    private val xmlTvFutureWindowMs = 48L * 60L * 60_000L
+    private val xmlTvFutureWindowMs = 72L * 60L * 60_000L
     private val completeEpgCoverageTarget = 0.98f
     private val xtreamShortEpgLimit = 24
+    private val xtreamVisibleShortEpgLimit = 96
     private val startupShortEpgChannelLimit = 1200
     private val fullCatchupHistoryChannelLimit = 4
     private val xtreamShortEpgBatchSize = 512
     private val xtreamShortEpgConcurrency = 32
-    private val cacheUpcomingProgramLimit = 24
+    private val cacheUpcomingProgramLimit = 48
     private val cacheRecentProgramLimit = 1
     private val cacheCatchupRecentProgramLimit = 96
     private val catchupRecentProgramLimit = 1000
@@ -1870,7 +1871,7 @@ class IptvRepository @Inject constructor(
                 val streamIdToChannelIds = mutableMapOf<String, MutableList<String>>()
                 for (ch in providerChannels) {
                     ch.epgId?.let { eid ->
-                        epgIdToChannelIds.getOrPut(eid) { mutableListOf() }.add(ch.id)
+                        addChannelIdToLookup(epgIdToChannelIds, eid, ch.id)
                     }
                     resolveXtreamStreamId(ch)?.let { sid ->
                         streamIdToChannelIds.getOrPut(sid.toString()) { mutableListOf() }.add(ch.id)
@@ -1902,7 +1903,12 @@ class IptvRepository @Inject constructor(
                     fetchXtreamEpgListingsAsync(
                         creds = creds,
                         streamIds = streamIds,
-                        timeoutMillis = xtreamShortEpgTimeout(streamIds.size)
+                        timeoutMillis = xtreamShortEpgTimeout(streamIds.size),
+                        listingLimit = if (providerChannels.size <= 128) {
+                            xtreamVisibleShortEpgLimit
+                        } else {
+                            xtreamShortEpgLimit
+                        }
                     ) { _, hadError ->
                         if (hadError) errors++
                     }
@@ -4948,7 +4954,8 @@ class IptvRepository @Inject constructor(
     private suspend fun fetchXtreamShortEpgForActiveProviders(
         config: IptvConfig,
         channels: List<IptvChannel>,
-        onProgress: (IptvLoadProgress) -> Unit
+        onProgress: (IptvLoadProgress) -> Unit,
+        listingLimit: Int = xtreamShortEpgLimit
     ): Map<String, IptvNowNext>? {
         val groups = groupXtreamChannelsByCredentials(config, channels)
         if (groups.isEmpty()) return null
@@ -4962,12 +4969,36 @@ class IptvRepository @Inject constructor(
                     90 + ((index * 6) / groups.size.coerceAtLeast(1))
                 )
             )
-            val parsed = fetchXtreamShortEpg(creds, providerChannels, onProgress)
+            val parsed = fetchXtreamShortEpg(creds, providerChannels, onProgress, listingLimit)
             if (!parsed.isNullOrEmpty()) {
                 merged.putAll(parsed)
             }
         }
         return merged.takeIf { hasAnyProgramData(it) }
+    }
+
+    private fun addChannelIdToLookup(
+        target: MutableMap<String, MutableList<String>>,
+        rawKey: String?,
+        channelId: String
+    ) {
+        guideKeyCandidates(rawKey).forEach { key ->
+            target.getOrPut(key) { mutableListOf() }.let { ids ->
+                if (channelId !in ids) ids += channelId
+            }
+        }
+    }
+
+    private fun resolveChannelIdsFromLookup(
+        lookup: Map<String, List<String>>,
+        rawKey: String?
+    ): List<String> {
+        if (rawKey.isNullOrBlank()) return emptyList()
+        val resolved = LinkedHashSet<String>()
+        guideKeyCandidates(rawKey).forEach { key ->
+            lookup[key]?.let { resolved.addAll(it) }
+        }
+        return resolved.toList()
     }
 
     /**
@@ -4981,7 +5012,8 @@ class IptvRepository @Inject constructor(
     private suspend fun fetchXtreamShortEpg(
         creds: XtreamCredentials,
         channels: List<IptvChannel>,
-        onProgress: (IptvLoadProgress) -> Unit
+        onProgress: (IptvLoadProgress) -> Unit,
+        listingLimit: Int = xtreamShortEpgLimit
     ): Map<String, IptvNowNext>? {
         if (channels.isEmpty()) return null
 
@@ -4990,7 +5022,7 @@ class IptvRepository @Inject constructor(
         val streamIdToChannelIds = mutableMapOf<String, MutableList<String>>()
         for (ch in channels) {
             ch.epgId?.let { eid ->
-                epgIdToChannelIds.getOrPut(eid) { mutableListOf() }.add(ch.id)
+                addChannelIdToLookup(epgIdToChannelIds, eid, ch.id)
             }
             resolveXtreamStreamId(ch)?.let { sid ->
                 streamIdToChannelIds.getOrPut(sid.toString()) { mutableListOf() }.add(ch.id)
@@ -5033,7 +5065,8 @@ class IptvRepository @Inject constructor(
         val allListings = fetchXtreamEpgListingsAsync(
             creds = creds,
             streamIds = streamIds,
-            timeoutMillis = xtreamShortEpgTimeout(streamIds.size)
+            timeoutMillis = xtreamShortEpgTimeout(streamIds.size),
+            listingLimit = listingLimit
         ) { _, hadError ->
             fetched++
             if (hadError) errors++
@@ -5081,6 +5114,7 @@ class IptvRepository @Inject constructor(
         creds: XtreamCredentials,
         streamIds: List<Int>,
         timeoutMillis: Long = 180_000L,
+        listingLimit: Int = xtreamShortEpgLimit,
         onStreamProcessed: (Int, Boolean) -> Unit = { _, _ -> }
     ): List<XtreamEpgListing> {
         // Concurrency bumped 20 → 32 so a 25k-channel sweep finishes inside
@@ -5100,7 +5134,7 @@ class IptvRepository @Inject constructor(
                             gate.withPermit {
                                 var hadError = false
                                 val url = "${creds.baseUrl}/player_api.php?username=${creds.username}" +
-                                    "&password=${creds.password}&action=get_short_epg&stream_id=$sid&limit=$xtreamShortEpgLimit"
+                                    "&password=${creds.password}&action=get_short_epg&stream_id=$sid&limit=$listingLimit"
                                 var listings: List<XtreamEpgListing>? = null
                                 try {
                                     var resp: XtreamEpgResponse? = requestJson(
@@ -5274,12 +5308,12 @@ class IptvRepository @Inject constructor(
 
             // Match by epg_id / channel_id field
             listing.channelId?.let { cid ->
-                epgIdToChannelIds[cid]?.let { resolvedChannelIds.addAll(it) }
+                resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, cid))
             }
             listing.epgId?.let { eid ->
                 // epg_id can be the stream_id in some providers
                 streamIdToChannelIds[eid]?.let { resolvedChannelIds.addAll(it) }
-                epgIdToChannelIds[eid]?.let { resolvedChannelIds.addAll(it) }
+                resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, eid))
             }
             // Match by stream_id
             listing.streamId?.let { sid ->

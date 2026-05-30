@@ -305,9 +305,9 @@ internal class IptvEpgIndex(context: Context) : SQLiteOpenHelper(
         const val DATABASE_VERSION = 1
         const val MAX_SQL_ARGS = 900
         const val MAX_DESCRIPTION_CHARS = 320
-        const val MAX_UPCOMING_PROGRAMS = 64
+        const val MAX_UPCOMING_PROGRAMS = 96
         const val MAX_RECENT_PROGRAMS = 240
         const val DEFAULT_PAST_WINDOW_MS = 48L * 60L * 60_000L
-        const val DEFAULT_FUTURE_WINDOW_MS = 72L * 60L * 60_000L
+        const val DEFAULT_FUTURE_WINDOW_MS = 96L * 60L * 60_000L
     }
 }
