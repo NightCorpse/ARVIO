@@ -47,6 +47,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -69,6 +71,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -180,6 +183,7 @@ import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.max
@@ -841,9 +845,13 @@ fun HomeScreen(
         else -> null
     }
 
+    val scope = rememberCoroutineScope()
     var isTrailerPlaying by remember { mutableStateOf(false) }
     var trailerSuppressed by remember { mutableStateOf(false) }
-    LaunchedEffect(displayHeroItem?.id) { trailerSuppressed = false }
+    LaunchedEffect(displayHeroItem?.id) {
+        trailerSuppressed = false
+        isTrailerPlaying = false
+    }
     val heroRowIsContinueWatching = latestDisplayCategories
         .getOrNull(focusState.currentRowIndex)?.id == "continue_watching"
     val trailerOverlayAlpha = remember { Animatable(1f) }
@@ -1018,7 +1026,19 @@ fun HomeScreen(
                         youtubeKey = uiState.heroTrailerKey!!,
                         delayMs = uiState.trailerDelaySeconds * 1000L,
                         volume = if (uiState.trailerSoundEnabled) 1f else 0f,
-                        onPlayingChanged = { playing -> isTrailerPlaying = playing },
+                        onFirstFrameRendered = {
+                            scope.launch {
+                                delay(500)
+                                isTrailerPlaying = true
+                            }
+                        },
+                        onEnded = {
+                            isTrailerPlaying = false
+                            scope.launch {
+                                delay(500)
+                                trailerSuppressed = true
+                            }
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1097,7 +1117,17 @@ fun HomeScreen(
             usePosterCards = usePosterCards,
             isContextMenuOpen = showContextMenu,
             trailerIsPlaying = isTrailerPlaying,
-            onTrailerStop = { trailerSuppressed = true },
+            onTrailerStop = {
+                if (isTrailerPlaying) {
+                    isTrailerPlaying = false
+                    scope.launch {
+                        delay(500)
+                        trailerSuppressed = true
+                    }
+                } else {
+                    trailerSuppressed = true
+                }
+            },
             isMobile = isMobile,
             heroItem = displayHeroItem,
             heroOverviewOverride = displayHeroOverview,
@@ -1314,7 +1344,7 @@ private fun HeroSection(
     // Use primary shadow for text (Compose only supports one shadow per text)
     // But the frosted pill provides additional protection
     val textShadow = textShadowPrimary
-    val heroTextWidth = 360.dp
+    val heroTextWidth = 560.dp
 
     Column(
         modifier = modifier,
@@ -1395,7 +1425,7 @@ private fun HeroSection(
             }
         }
 
-                Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Performance: Use key instead of AnimatedContent for faster transitions
         key(item.id) {
@@ -1462,10 +1492,10 @@ private fun HeroSection(
 
                     Column(
                         modifier = Modifier.width(heroTextWidth),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -1473,7 +1503,7 @@ private fun HeroSection(
                                 Text(
                                     text = displayDate,
                                     style = ArflixTypography.caption.copy(
-                                        fontSize = 13.sp,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.Bold,
                                         shadow = textShadow
                                     ),
@@ -1483,12 +1513,12 @@ private fun HeroSection(
 
                                 if (hasGenre || hasDuration) {
                                     Text(
-                                        text = "|",
+                                        text = "•",
                                         style = ArflixTypography.caption.copy(
-                                            fontSize = 13.sp,
+                                            fontSize = 16.sp,
                                             shadow = textShadow
                                         ),
-                                        color = Color.White.copy(alpha = 0.7f)
+                                        color = Color.White.copy(alpha = 0.5f)
                                     )
                                 }
                             }
@@ -1497,7 +1527,7 @@ private fun HeroSection(
                                 Text(
                                     text = genreText,
                                     style = ArflixTypography.caption.copy(
-                                        fontSize = 13.sp,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.Bold,
                                         shadow = textShadow
                                     ),
@@ -1511,18 +1541,18 @@ private fun HeroSection(
                             if (hasDuration) {
                                 if (hasGenre) {
                                     Text(
-                                        text = "|",
+                                        text = "•",
                                         style = ArflixTypography.caption.copy(
-                                            fontSize = 13.sp,
+                                            fontSize = 16.sp,
                                             shadow = textShadow
                                         ),
-                                        color = Color.White.copy(alpha = 0.7f)
+                                        color = Color.White.copy(alpha = 0.5f)
                                     )
                                 }
                                 Text(
                                     text = currentItem.duration,
                                     style = ArflixTypography.caption.copy(
-                                        fontSize = 13.sp,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.Bold,
                                         shadow = textShadow
                                     ),
@@ -1534,9 +1564,8 @@ private fun HeroSection(
 
                         if (hasSecondaryMetadata) {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 if (primaryNetworkLogo != null) {
                                     AsyncImage(
@@ -1545,18 +1574,16 @@ private fun HeroSection(
                                         contentDescription = "Primary streaming provider",
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier
-                                            .height(16.dp)
-                                            .width(58.dp)
+                                            .height(24.dp)
+                                            .widthIn(max = 72.dp)
                                     )
 
                                     if (hasRatingMetadata || hasBudgetMetadata) {
-                                        Text(
-                                            text = "|",
-                                            style = ArflixTypography.caption.copy(
-                                                fontSize = 12.sp,
-                                                shadow = textShadow
-                                            ),
-                                            color = Color.White.copy(alpha = 0.58f)
+                                        Box(
+                                            modifier = Modifier
+                                                .height(24.dp)
+                                                .width(1.dp)
+                                                .background(Color.White.copy(alpha = 0.3f))
                                         )
                                     }
                                 }
@@ -1565,20 +1592,18 @@ private fun HeroSection(
                                     ImdbSvgRatingBadge(
                                         rating = rating,
                                         imageLoader = metadataLogoImageLoader,
-                                        ratingFontSize = 13,
-                                        logoWidth = 36.dp,
-                                        logoHeight = 15.dp,
+                                        ratingFontSize = 16,
+                                        logoWidth = 58.dp,
+                                        logoHeight = 24.dp,
                                         textShadow = textShadow
                                     )
 
                                     if (hasBudgetMetadata) {
-                                        Text(
-                                            text = "|",
-                                            style = ArflixTypography.caption.copy(
-                                                fontSize = 12.sp,
-                                                shadow = textShadow
-                                            ),
-                                            color = Color.White.copy(alpha = 0.58f)
+                                        Box(
+                                            modifier = Modifier
+                                                .height(24.dp)
+                                                .width(1.dp)
+                                                .background(Color.White.copy(alpha = 0.3f))
                                         )
                                     }
                                 }
@@ -1587,14 +1612,13 @@ private fun HeroSection(
                                     Text(
                                         text = "Budget $budgetText",
                                         style = ArflixTypography.caption.copy(
-                                            fontSize = 12.sp,
+                                            fontSize = 16.sp,
                                             fontWeight = FontWeight.Medium,
                                             shadow = textShadow
                                         ),
                                         color = Color.White.copy(alpha = 0.74f),
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -1602,29 +1626,29 @@ private fun HeroSection(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Overview text (EPG data for IPTV, synopsis for movies/shows)
                 val displayOverview = remember(overviewOverride, currentItem.overview) {
                     cleanOverviewText(overviewOverride ?: currentItem.overview)
                 }
 
-                val overviewMaxHeight = 72.dp
+                val overviewMaxHeight = 96.dp
                 Box(
                     modifier = Modifier
-                        .width(360.dp)
+                        .width(heroTextWidth)
                         .height(overviewMaxHeight)
                 ) {
                     Text(
                         text = displayOverview,
                         style = ArflixTypography.body.copy(
-                            fontSize = 12.sp,
+                            fontSize = 16.sp,
                             fontWeight = FontWeight.Normal,
-                            lineHeight = 16.sp,
+                            lineHeight = 22.4.sp,
                             shadow = textShadow
                         ),
                         color = Color.White.copy(alpha = 0.9f),
-                        maxLines = 4,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1709,11 +1733,8 @@ private fun HomeHeroLayer(
     } else {
         // TV hero: full-screen overlay with clearlogo
         val configuration = LocalConfiguration.current
-        val contentRowHeight = (configuration.screenHeightDp * 0.34f).dp.coerceIn(240.dp, 320.dp)
-        val contentRowBottomPadding = 12.dp
-        val contentRowTopPadding = contentRowHeight + contentRowBottomPadding
-        val buttonsBottomPadding = contentRowTopPadding - 10.dp
-        val heroBottomPadding = buttonsBottomPadding + if (configuration.screenHeightDp < 720) 34.dp else 34.dp
+        val rowsViewportHeight = (configuration.screenHeightDp * 0.31f).dp.coerceIn(260.dp, 340.dp)
+        val heroBottomMargin = rowsViewportHeight + 48.dp
 
         Box(
             modifier = Modifier
@@ -1730,8 +1751,11 @@ private fun HomeHeroLayer(
                         showBudget = showBudget,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(start = contentStartPadding, end = 400.dp)
-                            .offset(y = -heroBottomPadding)
+                            .padding(
+                                start = contentStartPadding,
+                                end = 400.dp,
+                                bottom = heroBottomMargin
+                            )
                     )
                 }
             }
