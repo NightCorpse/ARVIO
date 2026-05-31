@@ -185,10 +185,20 @@ private fun expandGuideWindowBefore(start: Int, end: Int): Pair<Int, Int> {
 }
 
 private fun looksLikeMpegTsUrl(url: String): Boolean {
-    val normalized = url.substringBefore('?').lowercase()
-    return normalized.endsWith(".ts") ||
-        normalized.contains("/timeshift/") ||
-        normalized.contains("/live/")
+    val lower = url.lowercase()
+    val path = lower.substringBefore('?')
+    if (path.endsWith(".m3u8") || "output=m3u8" in lower) return false
+    if (path.endsWith(".ts") || "output=ts" in lower || path.contains("/timeshift/")) return true
+
+    val segments = path
+        .substringAfter("://", missingDelimiterValue = "")
+        .substringAfter('/', missingDelimiterValue = "")
+        .trim('/')
+        .split('/')
+        .filter { it.isNotBlank() }
+    return segments.size >= 4 &&
+        segments.first().equals("live", ignoreCase = true) &&
+        segments.last().substringBefore('.').toIntOrNull() != null
 }
 
 @Composable

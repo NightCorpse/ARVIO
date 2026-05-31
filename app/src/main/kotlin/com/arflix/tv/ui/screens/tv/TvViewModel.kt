@@ -836,9 +836,8 @@ class TvViewModel @Inject constructor(
 
         val currentState = _uiState.value
         val currentNowNext = currentState.snapshot.nowNext
-        val attemptedIds = currentState.epgAttemptedChannelIds
         val missingCount = orderedIds.count { id ->
-            !hasProgramData(currentNowNext[id]) && id !in attemptedIds
+            !hasProgramData(currentNowNext[id])
         }
         if (missingCount == 0) return
 
@@ -861,10 +860,9 @@ class TvViewModel @Inject constructor(
         lastVisibleEpgRefreshKey = refreshKey
         lastVisibleEpgRefreshAt = now
         val requestLimit = maxOf(firstPaintLimit, eagerLimit, backgroundLimit).coerceAtMost(orderedIds.size)
-        val latestAttemptedIds = _uiState.value.epgAttemptedChannelIds
         val missingIds = orderedIds
             .filterNot { id ->
-                hasProgramData(_uiState.value.snapshot.nowNext[id]) || id in latestAttemptedIds
+                hasProgramData(_uiState.value.snapshot.nowNext[id])
             }
             .take(requestLimit)
         if (missingIds.isEmpty()) return
@@ -930,9 +928,9 @@ class TvViewModel @Inject constructor(
             while (true) {
                 val batch = drainVisibleEpgBatch(
                     maxChannels = when (pass) {
-                        0 -> 1
-                        1 -> 16
-                        else -> 64
+                        0 -> 48
+                        1 -> 96
+                        else -> 160
                     }
                 )
                 if (batch.isEmpty()) break
@@ -951,7 +949,7 @@ class TvViewModel @Inject constructor(
                                 iptvRepository.refreshEpgForChannels(
                                     missingIds.toSet(),
                                     maxChannels = missingIds.size,
-                                    preferFullCatchupHistory = pass == 0
+                                    preferFullCatchupHistory = false
                                 )
                             }.getOrNull()
                         }
