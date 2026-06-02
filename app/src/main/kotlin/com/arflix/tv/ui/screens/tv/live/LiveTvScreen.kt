@@ -75,6 +75,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.arflix.tv.data.model.IptvChannel
+import com.arflix.tv.data.model.IptvNowNext
 import com.arflix.tv.data.model.IptvProgram
 import com.arflix.tv.data.model.Profile
 import com.arflix.tv.ui.screens.tv.TvUiState
@@ -163,7 +164,7 @@ private fun chooseStartupChannelId(
 private fun guideWindowAround(index: Int, total: Int): Pair<Int, Int> {
     if (total <= 0) return 0 to 0
     val safeIndex = index.coerceIn(0, total - 1)
-    val before = GuideInitialWindowRows / 3
+    val before = 0
     val start = (safeIndex - before).coerceAtLeast(0)
     val end = (start + GuideInitialWindowRows).coerceAtMost(total)
     val balancedStart = (end - GuideInitialWindowRows).coerceAtLeast(0)
@@ -182,6 +183,44 @@ private fun expandGuideWindowBefore(start: Int, end: Int): Pair<Int, Int> {
     val nextStart = (start - GuidePageRows).coerceAtLeast(0)
     val overflow = (end - nextStart - GuideMaxWindowRows).coerceAtLeast(0)
     return nextStart to (end - overflow).coerceAtLeast(nextStart)
+}
+
+private fun EnrichedChannel.hasGuideIdentity(): Boolean =
+    !source.epgId.isNullOrBlank() || !source.tvgName.isNullOrBlank()
+
+private fun IptvNowNext?.hasGuideData(): Boolean =
+    this != null &&
+        (now != null || next != null || later != null || upcoming.isNotEmpty() || recent.isNotEmpty())
+
+private fun EnrichedChannel.guideFallbackKeys(): List<String> {
+    val playlistId = id.substringBefore(':', missingDelimiterValue = "").trim()
+    val prefix = playlistId.ifBlank { "default" }
+    val keys = LinkedHashSet<String>()
+
+    fun addKey(kind: String, value: String?) {
+        val normalized = value
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotBlank() }
+            ?: return
+        keys += "$prefix|$kind:$normalized"
+    }
+
+    addKey("epg", source.epgId)
+    addKey("tvg", source.tvgName)
+    source.variantKey
+        ?.takeIf { it != source.id }
+        ?.let { addKey("variant", it) }
+    addKey(
+        "name",
+        name
+            .substringAfter('|', missingDelimiterValue = name)
+            .replace(Regex("""(?i)\b(?:4k|uhd|fhd|hd|sd|1080p|720p|60fps)\b"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    )
+
+    return keys.toList()
 }
 
 private fun looksLikeMpegTsUrl(url: String): Boolean {
@@ -416,6 +455,23 @@ fun LiveTvScreen(
         }
     }
     val visibleChannelsById = visibleEnrichedState.value.index.byId
+    val guideByFallbackKey = remember(state.snapshot.nowNext, visibleChannelsById) {
+        HashMap<String, IptvNowNext>().apply {
+            state.snapshot.nowNext.forEach { (channelId, guide) ->
+                if (!guide.hasGuideData()) return@forEach
+                val channel = visibleChannelsById[channelId] ?: return@forEach
+                channel.guideFallbackKeys().forEach { key ->
+                    putIfAbsent(key, guide)
+                }
+            }
+        }
+    }
+    fun guideForChannel(channel: EnrichedChannel?): IptvNowNext? {
+        if (channel == null) return null
+        val direct = state.snapshot.nowNext[channel.id]
+        if (direct.hasGuideData()) return direct
+        return channel.guideFallbackKeys().firstNotNullOfOrNull { key -> guideByFallbackKey[key] }
+    }
     // Playing channel — default to the one we were navigated to, else the first
     // channel of the first non-empty category.
     val rememberedChannelByCategory = remember { mutableMapOf<String, String>() }
@@ -450,8 +506,8 @@ fun LiveTvScreen(
         playingChannelId?.let { visibleEnrichedState.value.index.byId[it] }
             ?: filteredChannels.firstOrNull { it.id == playingChannelId }
     }
-    val currentNowNext = remember(playingChannelId, playingCatchupProgram, state.snapshot.nowNext) {
-        val live = playingChannelId?.let { state.snapshot.nowNext[it] }
+    val currentNowNext = remember(playingChannel, playingCatchupProgram, state.snapshot.nowNext, guideByFallbackKey) {
+        val live = guideForChannel(playingChannel)
         val catchup = playingCatchupProgram
         if (catchup != null) {
             com.arflix.tv.data.model.IptvNowNext(
@@ -502,6 +558,19 @@ fun LiveTvScreen(
             guideChannels.forEachIndexed { index, channel -> put(channel.id, index) }
         }
     }
+    val effectiveGuideNowNext = remember(state.snapshot.nowNext, guideChannels, guideByFallbackKey) {
+        HashMap<String, IptvNowNext>(state.snapshot.nowNext.size + guideChannels.size).apply {
+            putAll(state.snapshot.nowNext)
+            guideChannels.forEach { channel ->
+                val direct = state.snapshot.nowNext[channel.id]
+                if (!direct.hasGuideData()) {
+                    channel.guideFallbackKeys()
+                        .firstNotNullOfOrNull { key -> guideByFallbackKey[key] }
+                        ?.let { put(channel.id, it) }
+                }
+            }
+        }
+    }
 
     val epgAnchorChannelId = epgPrefetchAnchorId
         ?: selectedDisplayChannelId
@@ -511,24 +580,38 @@ fun LiveTvScreen(
         val maxPrefetch = if (selectedCategoryId == "all") 96 else 180
         val anchorIndex = epgAnchorChannelId?.let(guideChannelIndexById::get) ?: 0
         buildList<String> {
-            guideChannels.getOrNull(anchorIndex)?.id?.let { add(it) }
+            fun addChannel(channel: EnrichedChannel?) {
+                val id = channel?.id ?: return
+                if (!contains(id)) add(id)
+            }
+            fun addGuideFirst(index: Int) {
+                val channel = guideChannels.getOrNull(index) ?: return
+                if (channel.hasGuideIdentity()) addChannel(channel)
+            }
+
+            addChannel(guideChannels.getOrNull(anchorIndex))
             var index = anchorIndex + 1
             while (index < guideChannels.size && size < maxPrefetch) {
-                add(guideChannels[index].id)
+                addGuideFirst(index)
                 index++
             }
             var backIndex = anchorIndex - 1
             var backCount = 0
             while (backIndex >= 0 && backCount < 24 && size < maxPrefetch) {
-                add(guideChannels[backIndex].id)
+                addGuideFirst(backIndex)
                 backIndex--
                 backCount++
             }
             index = 0
             while (index < guideChannels.size && size < maxPrefetch) {
-                val id = guideChannels[index].id
-                if (id != epgAnchorChannelId && !contains(id)) {
-                    add(id)
+                addGuideFirst(index)
+                index++
+            }
+            index = 0
+            while (index < guideChannels.size && size < maxPrefetch) {
+                val channel = guideChannels[index]
+                if (!channel.hasGuideIdentity()) {
+                    addChannel(channel)
                 }
                 index++
             }
@@ -536,16 +619,15 @@ fun LiveTvScreen(
     }
     LaunchedEffect(selectedCategoryId, epgPrefetchIds, epgAnchorChannelId, state.iptvPreferencesLoaded, state.tvSessionLoaded, state.tvSession.lastChannelId, guideChannelIndexById, startupChannelApplied, playingChannelId, selectedDisplayChannelId, focusedChannelId) {
         val startupReady = state.iptvPreferencesLoaded && state.tvSessionLoaded
-        val sessionAnchorId = state.tvSession.lastChannelId
-            .takeIf { it.isNotBlank() && it in filteredChannelIndexById }
-        val sessionAnchorVisible = sessionAnchorId == null || sessionAnchorId in guideChannelIndexById
-        val prefetchAnchorVisible = epgAnchorChannelId == null || epgAnchorChannelId in guideChannelIndexById
-        val currentAnchorVisible = listOfNotNull(playingChannelId, selectedDisplayChannelId, focusedChannelId)
-            .any { it in guideChannelIndexById }
-        if (startupReady && startupChannelApplied && currentAnchorVisible && sessionAnchorVisible && prefetchAnchorVisible && epgPrefetchIds.isNotEmpty()) {
+        if (startupReady && startupChannelApplied && epgPrefetchIds.isNotEmpty()) {
+            val selectedId = epgAnchorChannelId
+                ?.takeIf { it in guideChannelIndexById }
+                ?: selectedDisplayChannelId?.takeIf { it in guideChannelIndexById }
+                ?: playingChannelId?.takeIf { it in guideChannelIndexById }
+                ?: epgPrefetchIds.firstOrNull()
             viewModel.prefetchVisibleCategoryEpg(
                 channelIds = epgPrefetchIds,
-                selectedChannelId = epgAnchorChannelId,
+                selectedChannelId = selectedId,
                 eagerLimit = if (selectedCategoryId == "all") 32 else 64,
                 backgroundLimit = if (selectedCategoryId == "all") 120 else 240,
             )
@@ -568,14 +650,18 @@ fun LiveTvScreen(
             )
         }
     }
-    val guideStatusIds = remember(epgPrefetchIds, guideChannels) {
+    val guideStatusIds = remember(epgPrefetchIds, guideChannels, visibleChannelsById, effectiveGuideNowNext) {
         epgPrefetchIds
             .ifEmpty { guideChannels.asSequence().map { it.id }.take(96).toList() }
+            .filter { id ->
+                visibleChannelsById[id]?.hasGuideIdentity() == true ||
+                    effectiveGuideNowNext[id].hasGuideData()
+            }
             .toCollection(HashSet())
     }
-    val matchedGuideCount = remember(state.snapshot.nowNext, guideStatusIds) {
+    val matchedGuideCount = remember(effectiveGuideNowNext, guideStatusIds) {
         guideStatusIds.count { id ->
-            state.snapshot.nowNext[id]?.let { guide ->
+            effectiveGuideNowNext[id]?.let { guide ->
                 guide.now != null || guide.next != null || guide.later != null ||
                     guide.upcoming.isNotEmpty() || guide.recent.isNotEmpty()
             } == true
@@ -768,7 +854,8 @@ fun LiveTvScreen(
         epgPrefetchAnchorId = channel.id
         rememberedChannelByCategory[selectedCategoryId] = channel.id
         val currentDisplayId = displayChannelIdFor(playingChannelId, visibleEnrichedState.value.index.byId, variantGroups)
-        if (channel.id == currentDisplayId && !isFullScreen) {
+        val isSamePlayingChannel = channel.id == playingChannelId || channel.id == currentDisplayId
+        if (isSamePlayingChannel && !isFullScreen) {
             // Second tap on the already-playing channel → fullscreen
             playingCatchupProgram = null
             isFullScreen = true
@@ -998,8 +1085,10 @@ fun LiveTvScreen(
         if (playingCatchupProgram == null) return
         if (exoPlayer.isPlaying) {
             exoPlayer.pause()
+            System.err.println("[IPTV-Catchup] pause position=${exoPlayer.currentPosition}")
         } else {
             exoPlayer.play()
+            System.err.println("[IPTV-Catchup] play position=${exoPlayer.currentPosition}")
         }
         hudPokeSignal++
     }
@@ -1019,11 +1108,13 @@ fun LiveTvScreen(
         } else {
             exoPlayer.pause()
         }
+        System.err.println("[IPTV-Catchup] seek delta=$deltaMs target=$target duration=$duration")
         hudPokeSignal++
     }
 
     fun returnCatchupToLive() {
         if (playingCatchupProgram == null) return
+        System.err.println("[IPTV-Catchup] return-live channel=${playingChannelId.orEmpty()}")
         playingCatchupProgram = null
         fullscreenGuideOpen = false
         exoPlayer.play()
@@ -1347,7 +1438,7 @@ fun LiveTvScreen(
                         channelWindowOffset = normalizedGuideStart,
                         totalChannelCount = filteredChannels.size,
                         clockTickMillis = guideClockMillis,
-                        nowNext = state.snapshot.nowNext,
+                        nowNext = effectiveGuideNowNext,
                         epgLoadingChannelIds = state.epgLoadingChannelIds,
                         epgAttemptedChannelIds = state.epgAttemptedChannelIds,
                         isGuideBackfillLoading = false,
@@ -1480,7 +1571,7 @@ fun LiveTvScreen(
                         channelWindowOffset = normalizedGuideStart,
                         totalChannelCount = filteredChannels.size,
                         clockTickMillis = guideClockMillis,
-                        nowNext = state.snapshot.nowNext,
+                        nowNext = effectiveGuideNowNext,
                         epgLoadingChannelIds = state.epgLoadingChannelIds,
                         epgAttemptedChannelIds = state.epgAttemptedChannelIds,
                         isGuideBackfillLoading = false,
@@ -1700,8 +1791,9 @@ fun LiveTvScreen(
             }
         }
 
-        LaunchedEffect(isFullScreen) {
-            if (isFullScreen) {
+        LaunchedEffect(isFullScreen, fullscreenGuideOpen, playingCatchupProgram) {
+            if (isFullScreen && !fullscreenGuideOpen) {
+                delay(50L)
                 runCatching { fsFocus.requestFocus() }
             }
         }
@@ -1729,7 +1821,7 @@ fun LiveTvScreen(
         ) {
             SearchOverlay(
                 channels = allDisplayChannels,
-                nowNext = state.snapshot.nowNext,
+                nowNext = effectiveGuideNowNext,
                 onDismiss = { searchOpen = false },
                 onPick = { channel ->
                     selectedCategoryId = bestCategoryIdForChannel(channel, visibleEnrichedState.value.tree)

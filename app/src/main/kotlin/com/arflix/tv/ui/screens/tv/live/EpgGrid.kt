@@ -511,8 +511,11 @@ fun EpgGrid(
                                             isGuideBackfillLoading
                                         )
                                 val guideAttempted = ch.id in epgAttemptedChannelIds
+                                val rowHasGuideIdentity = !ch.source.epgId.isNullOrBlank() ||
+                                    !ch.source.tvgName.isNullOrBlank()
                                 val placeholderTitle = when {
                                     isGuideLoading -> "Loading guide..."
+                                    !rowHasGuideIdentity -> "No programme data"
                                     hasGuideSource && guideAttempted -> "No guide data matched"
                                     hasGuideSource -> "Guide pending..."
                                     else -> "No guide source"
@@ -814,21 +817,7 @@ private fun effectiveCatchupDays(channel: EnrichedChannel): Int {
     val source = channel.source
     val hasCatchupMetadata = !source.catchupType.isNullOrBlank() || !source.catchupSource.isNullOrBlank()
     if (hasCatchupMetadata) return 7
-    val looksLikeXtream = source.xtreamStreamId != null || looksLikeXtreamStreamUrl(source.streamUrl)
-    return if (looksLikeXtream) 7 else 0
-}
-
-private fun looksLikeXtreamStreamUrl(url: String): Boolean {
-    val path = url.substringAfter("://", missingDelimiterValue = "")
-        .substringAfter('/', missingDelimiterValue = "")
-        .substringBefore('?')
-        .trim('/')
-    if (path.isBlank()) return false
-    val segments = path.split('/').filter { it.isNotBlank() }
-    if (segments.size >= 4 && segments.first().equals("live", ignoreCase = true)) {
-        return segments.last().substringBefore('.').toIntOrNull() != null
-    }
-    return segments.size >= 3 && segments.last().substringBefore('.').toIntOrNull() != null
+    return 0
 }
 
 private fun ProgramPlacement.canFocus(channel: EnrichedChannel, nowMillis: Long): Boolean =
@@ -843,6 +832,7 @@ private fun buildProgramPlacements(
 ): List<ProgramPlacement> {
     val placements = mutableListOf<ProgramPlacement>()
     var cursor = windowStartMillis
+    val gapTitle = if (programs.isEmpty()) placeholderTitle else "No programme data"
 
     programs.forEach { program ->
         // 1. Fill gap before this program
@@ -851,7 +841,7 @@ private fun buildProgramPlacements(
             if (gapEnd > cursor) {
                 addPlaceholderPlacement(
                     placements = placements,
-                    title = placeholderTitle,
+                    title = gapTitle,
                     gapStart = cursor,
                     gapEnd = gapEnd,
                     windowStartMillis = windowStartMillis,
@@ -882,7 +872,7 @@ private fun buildProgramPlacements(
     if (cursor < windowEndMillis) {
         addPlaceholderPlacement(
             placements = placements,
-            title = placeholderTitle,
+            title = gapTitle,
             gapStart = cursor,
             gapEnd = windowEndMillis,
             windowStartMillis = windowStartMillis,

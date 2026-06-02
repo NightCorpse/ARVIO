@@ -33,6 +33,7 @@ private const val LargeListPriorityCacheLimit = 360
 private const val RichCatchupRecentTarget = 6
 private const val RichCatchupRefreshThrottleMs = 45_000L
 private const val CurrentChannelEpgRefreshThrottleMs = 12_000L
+private const val LargeListCompleteGuideCoverageTarget = 0.75f
 
 data class TvUiState(
     val isLoading: Boolean = false,
@@ -415,6 +416,19 @@ class TvViewModel @Inject constructor(
         return live.endUtcMillis - System.currentTimeMillis() > 45L * 60_000L
     }
 
+    private fun hasRichSelectedGuideData(item: com.arflix.tv.data.model.IptvNowNext?): Boolean {
+        if (!hasProgramData(item) || item == null) return false
+        val now = System.currentTimeMillis()
+        val futureCount = buildList {
+            item.next?.let(::add)
+            item.later?.let(::add)
+            addAll(item.upcoming)
+        }.distinctBy { "${it.startUtcMillis}|${it.endUtcMillis}|${it.title}" }
+            .count { it.startUtcMillis > now }
+        val hasLongEnoughCurrent = item.now?.let { it.endUtcMillis - now > 20L * 60_000L } == true
+        return futureCount >= 6 || (hasLongEnoughCurrent && futureCount >= 3)
+    }
+
     private suspend fun refreshGuideFromCache() {
         val state = _uiState.value
         val channelIds = buildPriorityEpgChannelIds(
@@ -620,21 +634,42 @@ class TvViewModel @Inject constructor(
         val largeList = isLargeIptvList(channels.size)
         if (!state.isConfigured || channels.isEmpty()) return
         if (!hasNetworkEpgSource(state.config)) return
-        if (!force && largeList) {
-            completeEpgBackfillJob?.cancel()
-            completeEpgBackfillJob = null
-            setEpgBackfillInProgress(false)
-            System.err.println("[EPG-Complete] Skipping automatic full guide sweep for large list (${channels.size} channels)")
-            return
+        val indexedGuideChannels = if (largeList) {
+            runCatching { iptvRepository.indexedGuideChannelCount() }.getOrDefault(0)
+        } else {
+            0
+        }
+        val indexedGuidePrograms = if (largeList) {
+            runCatching { iptvRepository.indexedGuideProgramCount() }.getOrDefault(0)
+        } else {
+            0
+        }
+        val guideCapableChannels = if (largeList) {
+            guideCapableChannelCount(channels)
+        } else {
+            channels.size
+        }.coerceAtLeast(1)
+        val indexedCoverage = if (largeList && channels.isNotEmpty()) {
+            indexedGuideChannels.toFloat() / guideCapableChannels.toFloat()
+        } else {
+            0f
         }
         val hasGuideData = hasAnyEpgData(state.snapshot)
         val ageMs = iptvRepository.cachedEpgAgeMs()
-        if (!force && hasGuideData && ageMs < 24 * 60 * 60_000L) {
+        if (
+            !force &&
+            hasGuideData &&
+            ageMs < 24 * 60 * 60_000L &&
+            (!largeList || indexedCoverage >= LargeListCompleteGuideCoverageTarget)
+        ) {
             setEpgBackfillInProgress(false)
-            System.err.println("[EPG-Complete] Keeping cached guide; age=${ageMs / 1000}s")
+            System.err.println(
+                "[EPG-Complete] Keeping cached guide; age=${ageMs / 1000}s " +
+                    "index=$indexedGuideChannels/$indexedGuidePrograms"
+            )
             return
         }
-        if (!force && largeList && hasGuideData) {
+        if (!force && largeList && hasGuideData && indexedCoverage >= LargeListCompleteGuideCoverageTarget) {
             completeEpgBackfillJob?.cancel()
             completeEpgBackfillJob = null
             setEpgBackfillInProgress(false)
@@ -642,7 +677,11 @@ class TvViewModel @Inject constructor(
         }
 
         val coverage = epgCoverageRatio(state.snapshot)
-        val cacheLooksComplete = coverage >= 0.98f && ageMs < 6 * 60 * 60_000L
+        val cacheLooksComplete = if (largeList) {
+            indexedCoverage >= LargeListCompleteGuideCoverageTarget && ageMs < 24 * 60 * 60_000L
+        } else {
+            coverage >= 0.98f && ageMs < 6 * 60 * 60_000L
+        }
         if (!force && cacheLooksComplete) return
         if (completeEpgBackfillJob?.isActive == true) return
 
@@ -653,21 +692,31 @@ class TvViewModel @Inject constructor(
             append('|')
             append((coverage * 1_000).toInt())
             append('|')
+            append((indexedCoverage * 1_000).toInt())
+            append('|')
             append(ageMs / (30 * 60_000L))
         }
         if (!force && backfillKey == lastCompleteEpgBackfillKey) return
         lastCompleteEpgBackfillKey = backfillKey
 
+        if (largeList) {
+            System.err.println(
+                "[EPG-Complete] Starting large-list full guide index: " +
+                    "channels=${channels.size} guideCapable=$guideCapableChannels " +
+                    "indexed=$indexedGuideChannels programs=$indexedGuidePrograms " +
+                    "coverage=${(indexedCoverage * 100).toInt()}% age=${ageMs / 1000}s"
+            )
+        }
         setEpgBackfillInProgress(true)
         completeEpgBackfillJob = viewModelScope.launch(Dispatchers.IO) {
-            delay(if (hasGuideData) 2_000L else 250L)
+            delay(if (largeList) 6_000L else if (hasGuideData) 2_000L else 250L)
             val backfillResult = runCatching {
                 kotlinx.coroutines.withTimeoutOrNull(900_000L) {
                     iptvRepository.loadSnapshot(
                         forcePlaylistReload = false,
                         forceEpgReload = true,
                         allowNetworkEpgFetch = true,
-                        allowBroadShortEpg = false,
+                        allowBroadShortEpg = true,
                         onProgress = { progress ->
                             System.err.println("[EPG-Complete] ${progress.message} ${progress.percent ?: ""}".trim())
                         }
@@ -742,9 +791,11 @@ class TvViewModel @Inject constructor(
                     mergeNowNext(visibleGuide)
                     lastCompleteEpgBackfillCompletedAt = System.currentTimeMillis()
                     val covered = visibleGuide.count { (_, item) -> hasProgramData(item) }
+                    val indexedAfter = runCatching { iptvRepository.indexedGuideChannelCount() }.getOrDefault(0)
+                    val programsAfter = runCatching { iptvRepository.indexedGuideProgramCount() }.getOrDefault(0)
                     System.err.println(
-                        "[EPG-Complete] indexed full guide; merged visible guide " +
-                            "$covered/${priorityIds.size} channels"
+                        "[EPG-Complete] indexed full guide; index=$indexedAfter channels/" +
+                            "$programsAfter programs; merged visible guide $covered/${priorityIds.size} channels"
                     )
                     return@withContext
                 }
@@ -905,10 +956,7 @@ class TvViewModel @Inject constructor(
         viewModelScope.launch {
             refreshGuideFromCache(setOf(id))
             val cachedGuide = _uiState.value.snapshot.nowNext[id]
-            val cachedNow = cachedGuide?.now
-            val cachedHasCurrentProgram = cachedNow != null &&
-                System.currentTimeMillis() in cachedNow.startUtcMillis until cachedNow.endUtcMillis
-            if (cachedHasCurrentProgram) {
+            if (hasRichSelectedGuideData(cachedGuide)) {
                 clearEpgLoading(setOf(id))
                 return@launch
             }
@@ -918,7 +966,7 @@ class TvViewModel @Inject constructor(
                     iptvRepository.refreshEpgForChannels(
                         channelIds = setOf(id),
                         maxChannels = 1,
-                        preferFullCatchupHistory = false
+                        preferFullCatchupHistory = true
                     )
                 }.getOrNull()
             }
@@ -1019,7 +1067,7 @@ class TvViewModel @Inject constructor(
                                 iptvRepository.refreshEpgForChannels(
                                     setOf(selectedMissingId),
                                     maxChannels = 1,
-                                    preferFullCatchupHistory = false
+                                    preferFullCatchupHistory = true
                                 )
                             }.getOrNull()
                         }
@@ -1409,6 +1457,12 @@ private fun buildPriorityEpgChannelIds(
 
 private fun isLargeIptvList(channelCount: Int): Boolean {
     return channelCount > LargeIptvListChannelCount
+}
+
+private fun guideCapableChannelCount(channels: List<IptvChannel>): Int {
+    return channels.count { channel ->
+        !channel.epgId.isNullOrBlank() || !channel.tvgName.isNullOrBlank()
+    }.takeIf { it > 0 } ?: channels.size
 }
 
 private fun setPreparedContent(state: TvUiState): TvUiState {

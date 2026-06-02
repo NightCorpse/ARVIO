@@ -113,6 +113,26 @@ internal class IptvEpgIndex(context: Context) : SQLiteOpenHelper(
         }
     }
 
+    fun countChannelsWithPrograms(sourceKey: String): Int {
+        if (sourceKey.isBlank()) return 0
+        return readableDatabase.rawQuery(
+            "SELECT COUNT(DISTINCT channel_id) FROM epg_programs WHERE source_key = ?",
+            arrayOf(sourceKey)
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
+    fun countPrograms(sourceKey: String): Int {
+        if (sourceKey.isBlank()) return 0
+        return readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM epg_programs WHERE source_key = ?",
+            arrayOf(sourceKey)
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
     fun deleteSource(sourceKey: String) {
         if (sourceKey.isBlank()) return
         writableDatabase.runInTransaction {

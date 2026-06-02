@@ -82,6 +82,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.lang.reflect.Type
 import java.security.KeyStore
@@ -267,8 +268,8 @@ class IptvRepository @Inject constructor(
     private val xtreamVisibleShortEpgLimit = 96
     private val startupShortEpgChannelLimit = 1200
     private val fullCatchupHistoryChannelLimit = 4
-    private val xtreamShortEpgBatchSize = 512
-    private val xtreamShortEpgConcurrency = 32
+    private val xtreamShortEpgBatchSize = 1024
+    private val xtreamShortEpgConcurrency = 64
     private val cacheUpcomingProgramLimit = 48
     private val cacheRecentProgramLimit = 1
     private val cacheCatchupRecentProgramLimit = 96
@@ -750,9 +751,11 @@ class IptvRepository @Inject constructor(
             ordered.take(10).forEach { candidate ->
                 val probe = probePlaybackUrl(candidate, channel.requestHeaders)
                 if (probe != null && probe.isPlayable) {
-                    if (candidate != ordered.firstOrNull()) {
-                        System.err.println("[IPTV-Catchup] selected fallback status=${probe.statusCode} url=${redactIptvUrl(candidate)}")
-                    }
+                    System.err.println(
+                        "[IPTV-Catchup] selected " +
+                            "${if (candidate == ordered.firstOrNull()) "primary" else "fallback"} " +
+                            "status=${probe.statusCode} url=${redactIptvUrl(candidate)}"
+                    )
                     return@withContext candidate
                 }
                 if (probe != null) {
@@ -1462,7 +1465,16 @@ class IptvRepository @Inject constructor(
                 }
 
                 // ── Slow path: XMLTV download (always runs to fill remaining channels) ──
-                if (epgCandidates.isNotEmpty()) {
+                val skipXmlTvAfterXtreamShort = hasXtreamChannels &&
+                    channels.size > 10_000 &&
+                    shortEpgResult != null &&
+                    hasAnyProgramData(shortEpgResult)
+                if (skipXmlTvAfterXtreamShort) {
+                    System.err.println(
+                        "[EPG] Skipping XMLTV after large-list Xtream sweep; " +
+                            "provider short/simple APIs already returned ${shortEpgResult?.size ?: 0} channels"
+                    )
+                } else if (epgCandidates.isNotEmpty()) {
                     val epgCandidatesToTry = epgCandidates
                     var bestCoverage = epgCoverageRatio(channels, resolvedNowNext)
                     val mergedXmlNowNext = ConcurrentHashMap(resolvedNowNext)
@@ -1665,8 +1677,11 @@ class IptvRepository @Inject constructor(
                     cachedNowNext = ConcurrentHashMap(guideCache.nowNext)
                     cachedEpgAt = guideCache.loadedAtEpochMs
                     persistEpgIndexChannels(config, guideCache.nowNext, cachedEpgAt)
+                    val indexedChannels = countIndexedGuideChannels()
+                    val indexedPrograms = countIndexedGuidePrograms()
                     System.err.println(
-                        "[EPG] Warm cache loaded ${guideCache.nowNext.size} guide channels from disk"
+                        "[EPG] Warm cache loaded ${guideCache.nowNext.size} guide channels from disk; " +
+                            "index=$indexedChannels channels/$indexedPrograms programs"
                     )
                 } else {
                     cachedNowNext = ConcurrentHashMap()
@@ -1862,6 +1877,10 @@ class IptvRepository @Inject constructor(
         return result
     }
 
+    fun indexedGuideChannelCount(): Int = countIndexedGuideChannels()
+
+    fun indexedGuideProgramCount(): Int = countIndexedGuidePrograms()
+
     /**
      * Refreshes short Xtream EPG data for the specified channel IDs.
      *
@@ -1899,6 +1918,7 @@ class IptvRepository @Inject constructor(
                 if (resolveXtreamStreamId(channel) == null) continue
                 channelsByCredentials.getOrPut(creds) { mutableListOf() }.add(channel)
             }
+            val allChannelsByCredentials = groupXtreamChannelsByCredentials(config, cachedChannels)
             val mergedNowNext = ConcurrentHashMap<String, IptvNowNext>()
             var totalListings = 0
             var totalErrors = 0
@@ -1918,9 +1938,19 @@ class IptvRepository @Inject constructor(
 
                 // Build lookups for this provider's channels only. Multi-playlist
                 // setups may use different Xtream credentials per playlist.
+                //
+                // Xtream EPG responses are often keyed by epg_channel_id rather
+                // than the exact stream_id. When a small visible refresh asks
+                // for one variant first (for example NPO 1 4K), fan that guide
+                // data out to same-provider channels sharing the same EPG id
+                // (for example NPO 1 HD/SD) without collapsing channel rows or
+                // mixing playback sources.
+                val providerLookupChannels = allChannelsByCredentials[creds]
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: providerChannels
                 val epgIdToChannelIds = mutableMapOf<String, MutableList<String>>()
                 val streamIdToChannelIds = mutableMapOf<String, MutableList<String>>()
-                for (ch in providerChannels) {
+                for (ch in providerLookupChannels) {
                     ch.epgId?.let { eid ->
                         addChannelIdToLookup(epgIdToChannelIds, eid, ch.id)
                     }
@@ -1985,7 +2015,7 @@ class IptvRepository @Inject constructor(
                     listings = allListings,
                     epgIdToChannelIds = epgIdToChannelIds,
                     streamIdToChannelIds = streamIdToChannelIds,
-                    channelsById = providerChannels.associateBy { it.id }
+                    channelsById = providerLookupChannels.associateBy { it.id }
                 )
                 if (freshNowNext.isNotEmpty()) {
                     mergedNowNext.putAll(freshNowNext)
@@ -2132,6 +2162,18 @@ class IptvRepository @Inject constructor(
         }.onFailure { error ->
             System.err.println("[EPG-Index] Failed to update guide index: ${error.message}")
         }
+    }
+
+    private fun countIndexedGuideChannels(): Int {
+        val indexKey = currentEpgIndexKey
+        if (indexKey.isBlank()) return 0
+        return runCatching { epgIndex.countChannelsWithPrograms(indexKey) }.getOrDefault(0)
+    }
+
+    private fun countIndexedGuidePrograms(): Int {
+        val indexKey = currentEpgIndexKey
+        if (indexKey.isBlank()) return 0
+        return runCatching { epgIndex.countPrograms(indexKey) }.getOrDefault(0)
     }
 
     private suspend fun fetchFreshChannelsForStartup(config: IptvConfig): Pair<List<IptvChannel>, com.arflix.tv.data.api.StalkerApi?>? {
@@ -5043,6 +5085,26 @@ class IptvRepository @Inject constructor(
         }
     }
 
+    private fun trimXtreamListingsToGuideWindow(
+        listings: List<XtreamEpgListing>,
+        nowMs: Long = System.currentTimeMillis(),
+        pastWindowMs: Long = xmlTvPastWindowMs,
+        futureWindowMs: Long = xmlTvFutureWindowMs
+    ): List<XtreamEpgListing> {
+        if (listings.isEmpty()) return listings
+        val startBound = nowMs - pastWindowMs
+        val endBound = nowMs + futureWindowMs
+        return listings.filter { listing ->
+            val startMs = listing.startTimestamp?.toLongOrNull()?.let { it * 1000L }
+                ?: parseXtreamDateTime(listing.start)
+                ?: return@filter false
+            val stopMs = listing.stopTimestamp?.toLongOrNull()?.let { it * 1000L }
+                ?: parseXtreamDateTime(listing.end)
+                ?: return@filter false
+            stopMs > startBound && startMs < endBound
+        }
+    }
+
     private fun JsonElement.toXtreamEpgListingOrNull(): XtreamEpgListing? =
         runCatching { gson.fromJson(this, XtreamEpgListing::class.java) }.getOrNull()
 
@@ -5198,13 +5260,26 @@ class IptvRepository @Inject constructor(
         // with the widened concurrency in fetchXtreamEpgListingsAsync this
         // completes within the 60s budget for most providers.
         val toFetch = prioritized
-        System.err.println("[EPG] Xtream short EPG: fetching ${toFetch.size}/${xtreamChannels.size} channels")
+        val includeStreamsWithoutGuideKey = toFetch.size <= xtreamShortEpgBatchSize
+        System.err.println(
+            "[EPG] Xtream short EPG: preparing stream sweep for ${toFetch.size} channels " +
+                "includeNoGuide=$includeStreamsWithoutGuideKey"
+        )
+        val representatives = representativeXtreamEpgStreamIds(
+            channels = toFetch,
+            includeStreamsWithoutGuideKey = includeStreamsWithoutGuideKey
+        )
+        val streamIds = representatives.streamIds
+        System.err.println(
+            "[EPG] Xtream short EPG: fetching ${streamIds.size} streams " +
+                "for ${toFetch.size}/${xtreamChannels.size} channels " +
+                "skippedNoGuide=${representatives.skippedWithoutGuideKey}"
+        )
         if (toFetch.isEmpty()) return null
 
         var errors = 0
         var fetched = 0
-        val total = toFetch.size
-        val streamIds = toFetch.mapNotNull { resolveXtreamStreamId(it) }
+        val total = streamIds.size.coerceAtLeast(1)
 
         val allListings = fetchXtreamEpgListingsAsync(
             creds = creds,
@@ -5216,7 +5291,7 @@ class IptvRepository @Inject constructor(
             if (hadError) errors++
             if (fetched % 50 == 0) {
                 val pct = (90 + ((fetched.toLong() * 8L) / total.toLong())).toInt().coerceIn(90, 98)
-                onProgress(IptvLoadProgress("Loading EPG... $fetched/$total channels", pct))
+                onProgress(IptvLoadProgress("Loading EPG... $fetched/$total streams", pct))
             }
         }
         System.err.println("[EPG] Xtream short EPG done: ${allListings.size} listings, $fetched fetched, $errors errors")
@@ -5234,6 +5309,47 @@ class IptvRepository @Inject constructor(
             streamIdToChannelIds = streamIdToChannelIds,
             channelsById = channels.associateBy { it.id }
         )
+    }
+
+    private fun representativeXtreamEpgStreamIds(
+        channels: List<IptvChannel>,
+        includeStreamsWithoutGuideKey: Boolean
+    ): XtreamEpgRepresentativeStreams {
+        val withGuideKey = LinkedHashSet<Int>()
+        val withoutGuideKey = LinkedHashSet<Int>()
+        var skippedWithoutGuideKey = 0
+
+        channels.forEach { channel ->
+            val streamId = resolveXtreamStreamId(channel) ?: return@forEach
+            val guideKey = representativeGuideKey(channel)
+            if (guideKey.isNullOrBlank()) {
+                if (includeStreamsWithoutGuideKey) {
+                    withoutGuideKey += streamId
+                } else {
+                    skippedWithoutGuideKey++
+                }
+            } else {
+                withGuideKey += streamId
+            }
+        }
+
+        val streamIds = buildList {
+            addAll(withGuideKey)
+            addAll(withoutGuideKey)
+        }.distinct()
+        return XtreamEpgRepresentativeStreams(streamIds, skippedWithoutGuideKey)
+    }
+
+    private data class XtreamEpgRepresentativeStreams(
+        val streamIds: List<Int>,
+        val skippedWithoutGuideKey: Int
+    )
+
+    private fun representativeGuideKey(channel: IptvChannel): String? {
+        return sequenceOf(channel.epgId, channel.tvgName)
+            .filterNotNull()
+            .map { normalizeLooseKey(it) }
+            .firstOrNull { it.isNotBlank() }
     }
 
 
@@ -5270,8 +5386,9 @@ class IptvRepository @Inject constructor(
         if (distinctStreamIds.isEmpty()) return emptyList()
         val gate = Semaphore(xtreamShortEpgConcurrency)
         val listingsResult = ConcurrentLinkedQueue<XtreamEpgListing>()
+        val simpleFallbacks = AtomicInteger(0)
         val completed = withTimeoutOrNull(timeoutMillis) {
-            withContext(Dispatchers.IO.limitedParallelism(32)) {
+            withContext(Dispatchers.IO.limitedParallelism(xtreamShortEpgConcurrency)) {
                 val sampleLogged = AtomicBoolean(false)
                 distinctStreamIds.chunked(xtreamShortEpgBatchSize).forEach { batch ->
                     batch.map { sid ->
@@ -5298,6 +5415,19 @@ class IptvRepository @Inject constructor(
                                         )
                                         listings = resp?.epgListings
                                     }
+                                    if (listings.isNullOrEmpty() && allowUnboundedFallback) {
+                                        val simpleUrl = "${creds.baseUrl}/player_api.php?username=${creds.username}" +
+                                            "&password=${creds.password}&action=get_simple_data_table&stream_id=$sid"
+                                        val simpleResp: JsonObject? = requestJson(
+                                            url = simpleUrl,
+                                            type = JsonObject::class.java,
+                                            client = xtreamGuideHttpClient
+                                        )
+                                        listings = trimXtreamListingsToGuideWindow(parseXtreamListingsFromJson(simpleResp))
+                                        if (!listings.isNullOrEmpty()) {
+                                            simpleFallbacks.incrementAndGet()
+                                        }
+                                    }
                                     if (!listings.isNullOrEmpty()) {
                                         listingsResult.addAll(listings)
                                         if (sampleLogged.compareAndSet(false, true)) {
@@ -5318,6 +5448,10 @@ class IptvRepository @Inject constructor(
                 "[EPG] Xtream short EPG timed out after ${timeoutMillis}ms; " +
                     "keeping ${listingsResult.size} fetched listings"
             )
+        }
+        val fallbackCount = simpleFallbacks.get()
+        if (fallbackCount > 0) {
+            System.err.println("[EPG] Xtream simple-data fallback filled $fallbackCount short-empty streams")
         }
         return listingsResult.toList()
     }
@@ -5347,7 +5481,7 @@ class IptvRepository @Inject constructor(
                                     type = JsonObject::class.java,
                                     client = xtreamGuideHttpClient
                                 )
-                                val listings = parseXtreamListingsFromJson(resp)
+                                val listings = trimXtreamListingsToGuideWindow(parseXtreamListingsFromJson(resp))
                                 if (listings.isNotEmpty()) {
                                     listingsResult.addAll(listings)
                                 }
@@ -5454,6 +5588,9 @@ class IptvRepository @Inject constructor(
             // Match by epg_id / channel_id field
             listing.channelId?.let { cid ->
                 resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, cid))
+            }
+            listing.lang?.let { lang ->
+                resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, lang))
             }
             listing.epgId?.let { eid ->
                 // epg_id can be the stream_id in some providers
@@ -6122,9 +6259,7 @@ class IptvRepository @Inject constructor(
         if (explicitDays > 0) return explicitDays
         val hasCatchupMetadata = !channel.catchupType.isNullOrBlank() || !channel.catchupSource.isNullOrBlank()
         if (hasCatchupMetadata) return 7
-        val looksLikeXtream = resolveXtreamCredentials(channel.streamUrl) != null &&
-            resolveXtreamStreamId(channel) != null
-        return if (looksLikeXtream) 7 else 0
+        return 0
     }
 
     private fun hasAnyProgramData(nowNext: Map<String, IptvNowNext>): Boolean {
