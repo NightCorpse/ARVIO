@@ -432,7 +432,13 @@ class TvViewModel @Inject constructor(
     private fun supportsCatchup(channel: IptvChannel?): Boolean {
         if (channel == null) return false
         if (channel.catchupDays > 0) return true
-        return !channel.catchupType.isNullOrBlank() || !channel.catchupSource.isNullOrBlank()
+        if (!channel.catchupType.isNullOrBlank() || !channel.catchupSource.isNullOrBlank()) return true
+        if (channel.xtreamStreamId != null) return true
+        val streamUrl = channel.streamUrl
+        return streamUrl.contains("/live/", ignoreCase = true) ||
+            streamUrl.contains("/timeshift/", ignoreCase = true) ||
+            channel.id.contains(":xtream:", ignoreCase = true) ||
+            channel.id.startsWith("xtream:", ignoreCase = true)
     }
 
     private fun recentCatchupCount(

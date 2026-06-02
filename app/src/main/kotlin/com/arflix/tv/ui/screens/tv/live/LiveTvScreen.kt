@@ -269,7 +269,12 @@ private fun IptvChannel.catchupInSegmentSeekOffset(offsetMs: Long): Long {
 private fun EnrichedChannel?.supportsCatchupHistory(): Boolean {
     val source = this?.source ?: return false
     if (source.catchupDays > 0) return true
-    return !source.catchupType.isNullOrBlank() || !source.catchupSource.isNullOrBlank()
+    if (!source.catchupType.isNullOrBlank() || !source.catchupSource.isNullOrBlank()) return true
+    if (source.xtreamStreamId != null) return true
+    return source.streamUrl.contains("/live/", ignoreCase = true) ||
+        source.streamUrl.contains("/timeshift/", ignoreCase = true) ||
+        source.id.contains(":xtream:", ignoreCase = true) ||
+        source.id.startsWith("xtream:", ignoreCase = true)
 }
 
 @Composable

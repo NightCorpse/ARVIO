@@ -2041,7 +2041,8 @@ class IptvRepository @Inject constructor(
                     listings = allListings,
                     epgIdToChannelIds = epgIdToChannelIds,
                     streamIdToChannelIds = streamIdToChannelIds,
-                    channelsById = providerLookupChannels.associateBy { it.id }
+                    channelsById = providerLookupChannels.associateBy { it.id },
+                    forceCatchupHistory = preferFullCatchupHistory
                 )
                 if (freshNowNext.isNotEmpty()) {
                     mergedNowNext.putAll(freshNowNext)
@@ -5581,7 +5582,8 @@ class IptvRepository @Inject constructor(
         listings: List<XtreamEpgListing>,
         epgIdToChannelIds: Map<String, List<String>>,
         streamIdToChannelIds: Map<String, List<String>>,
-        channelsById: Map<String, IptvChannel> = emptyMap()
+        channelsById: Map<String, IptvChannel> = emptyMap(),
+        forceCatchupHistory: Boolean = false
     ): Map<String, IptvNowNext> {
         // Detect and save server timezone offset
         val sampleListing = listings.firstOrNull { it.startTimestamp != null && !it.start.isNullOrBlank() }
@@ -5598,7 +5600,7 @@ class IptvRepository @Inject constructor(
         }
 
         val nowMs = System.currentTimeMillis()
-        val oldestRecentCutoff = oldestRecentCutoff(channelsById.values, nowMs)
+        val oldestRecentCutoff = oldestRecentCutoff(channelsById.values, nowMs, forceCatchupHistory)
 
         // Group listings by channel.
         // Try matching by: epg_id (channelId field), then stream_id.
@@ -5670,7 +5672,7 @@ class IptvRepository @Inject constructor(
             val recent = mutableListOf<IptvProgram>()
 
             if (sorted.isNotEmpty()) {
-                val recentCutoff = recentCutoffForChannel(channelsById[channelId], nowMs)
+                val recentCutoff = recentCutoffForChannel(channelsById[channelId], nowMs, forceCatchupHistory)
                 var startIndex = sorted.binarySearch { it.startUtcMillis.compareTo(recentCutoff) }
                 if (startIndex < 0) {
                     startIndex = -(startIndex + 1)
@@ -5685,7 +5687,7 @@ class IptvRepository @Inject constructor(
                     val p = sorted[i]
                     when {
                         p.endUtcMillis <= nowMs && p.endUtcMillis > recentCutoff -> {
-                            addRecentCandidate(recent, p, recentProgramLimitForChannel(channelsById[channelId]))
+                            addRecentCandidate(recent, p, recentProgramLimitForChannel(channelsById[channelId], forceCatchupHistory))
                         }
                         p.isLive(nowMs) -> now = p
                         p.startUtcMillis > nowMs && next == null -> next = p
@@ -6259,12 +6261,20 @@ class IptvRepository @Inject constructor(
         }
     }
 
-    private fun recentProgramLimitForChannel(channel: IptvChannel?): Int {
-        return if (effectiveCatchupDays(channel) > 0) catchupRecentProgramLimit else epgRecentProgramLimit
+    private fun recentProgramLimitForChannel(channel: IptvChannel?, forceCatchupHistory: Boolean = false): Int {
+        return if (forceCatchupHistory || effectiveCatchupDays(channel) > 0) {
+            catchupRecentProgramLimit
+        } else {
+            epgRecentProgramLimit
+        }
     }
 
-    private fun recentCutoffForChannel(channel: IptvChannel?, nowUtcMillis: Long): Long {
-        val catchupDays = effectiveCatchupDays(channel)
+    private fun recentCutoffForChannel(
+        channel: IptvChannel?,
+        nowUtcMillis: Long,
+        forceCatchupHistory: Boolean = false
+    ): Long {
+        val catchupDays = effectiveCatchupDays(channel, forceCatchupHistory)
         return if (catchupDays > 0) {
             nowUtcMillis - catchupDays * 24L * 60L * 60_000L
         } else {
@@ -6272,8 +6282,12 @@ class IptvRepository @Inject constructor(
         }
     }
 
-    private fun oldestRecentCutoff(channels: Collection<IptvChannel>, nowUtcMillis: Long): Long {
-        val maxCatchupDays = channels.maxOfOrNull { effectiveCatchupDays(it) } ?: 0
+    private fun oldestRecentCutoff(
+        channels: Collection<IptvChannel>,
+        nowUtcMillis: Long,
+        forceCatchupHistory: Boolean = false
+    ): Long {
+        val maxCatchupDays = channels.maxOfOrNull { effectiveCatchupDays(it, forceCatchupHistory) } ?: 0
         return if (maxCatchupDays > 0) {
             nowUtcMillis - maxCatchupDays * 24L * 60L * 60_000L
         } else {
@@ -6298,12 +6312,13 @@ class IptvRepository @Inject constructor(
         return channels.associate { channel -> channel.id to recentProgramLimitForChannel(channel) }
     }
 
-    private fun effectiveCatchupDays(channel: IptvChannel?): Int {
+    private fun effectiveCatchupDays(channel: IptvChannel?, forceCatchupHistory: Boolean = false): Int {
         if (channel == null) return 0
         val explicitDays = channel.catchupDays.coerceIn(0, 7)
         if (explicitDays > 0) return explicitDays
         val hasCatchupMetadata = !channel.catchupType.isNullOrBlank() || !channel.catchupSource.isNullOrBlank()
         if (hasCatchupMetadata) return 7
+        if (forceCatchupHistory) return 2
         return 0
     }
 
