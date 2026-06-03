@@ -1492,8 +1492,10 @@ class IptvRepository @Inject constructor(
                     System.err.println("[EPG] Skipping broad Xtream short EPG so full XMLTV can backfill ${channels.size} channels first")
                 }
 
-                // ── Slow path: XMLTV download (always runs to fill remaining channels) ──
+                // ── Slow path: XMLTV download. On large lists normal startup keeps first paint fast
+                // by skipping this after short EPG; forced/background refreshes still run it.
                 val skipXmlTvAfterXtreamShort = hasXtreamChannels &&
+                    !forceEpgReload &&
                     channels.size > 10_000 &&
                     shortEpgResult != null &&
                     hasAnyProgramData(shortEpgResult)
@@ -1600,12 +1602,12 @@ class IptvRepository @Inject constructor(
                 }
 
                 if (!resolved && !shouldFetchBroadShortEpg && hasXtreamChannels) {
-                    System.err.println("[EPG] XMLTV did not resolve; falling back to broad Xtream short EPG")
-                    val shortEpgAttempt = runCatching {
-                        fetchXtreamShortEpgForActiveProviders(config, channels, onProgress)
+                    System.err.println("[EPG] XMLTV did not resolve; falling back to full Xtream guide API")
+                    val fullEpgAttempt = runCatching {
+                        fetchXtreamFullEpgForActiveProviders(config, channels, onProgress)
                     }
-                    if (shortEpgAttempt.isSuccess) {
-                        val parsed = shortEpgAttempt.getOrNull()
+                    if (fullEpgAttempt.isSuccess) {
+                        val parsed = fullEpgAttempt.getOrNull()
                         if (parsed != null && hasAnyProgramData(parsed)) {
                             cachedNowNext.putAll(parsed)
                             resolvedNowNext = cachedNowNext
@@ -1613,11 +1615,32 @@ class IptvRepository @Inject constructor(
                             persistEpgIndexChannels(config, parsed, cachedEpgAt)
                             epgUpdated = true
                             resolved = true
-                            System.err.println("[EPG] Broad Xtream fallback SUCCESS: ${parsed.size} fresh, ${cachedNowNext.size} total cached")
+                            System.err.println("[EPG] Full Xtream fallback SUCCESS: ${parsed.size} fresh, ${cachedNowNext.size} total cached")
                         }
                     } else {
-                        epgFailureMessage = shortEpgAttempt.exceptionOrNull()?.message
-                        System.err.println("[EPG] Broad Xtream fallback failed: $epgFailureMessage")
+                        epgFailureMessage = fullEpgAttempt.exceptionOrNull()?.message
+                        System.err.println("[EPG] Full Xtream fallback failed: $epgFailureMessage")
+                    }
+                    if (!resolved) {
+                        System.err.println("[EPG] Full Xtream fallback did not resolve; falling back to broad Xtream short EPG")
+                        val shortEpgAttempt = runCatching {
+                            fetchXtreamShortEpgForActiveProviders(config, channels, onProgress)
+                        }
+                        if (shortEpgAttempt.isSuccess) {
+                            val parsed = shortEpgAttempt.getOrNull()
+                            if (parsed != null && hasAnyProgramData(parsed)) {
+                                cachedNowNext.putAll(parsed)
+                                resolvedNowNext = cachedNowNext
+                                cachedEpgAt = System.currentTimeMillis()
+                                persistEpgIndexChannels(config, parsed, cachedEpgAt)
+                                epgUpdated = true
+                                resolved = true
+                                System.err.println("[EPG] Broad Xtream fallback SUCCESS: ${parsed.size} fresh, ${cachedNowNext.size} total cached")
+                            }
+                        } else {
+                            epgFailureMessage = shortEpgAttempt.exceptionOrNull()?.message
+                            System.err.println("[EPG] Broad Xtream fallback failed: $epgFailureMessage")
+                        }
                     }
                 }
 
@@ -5228,6 +5251,31 @@ class IptvRepository @Inject constructor(
         return merged.takeIf { hasAnyProgramData(it) }
     }
 
+    private suspend fun fetchXtreamFullEpgForActiveProviders(
+        config: IptvConfig,
+        channels: List<IptvChannel>,
+        onProgress: (IptvLoadProgress) -> Unit
+    ): Map<String, IptvNowNext>? {
+        val groups = groupXtreamChannelsByCredentials(config, channels)
+        if (groups.isEmpty()) return null
+
+        val merged = ConcurrentHashMap<String, IptvNowNext>()
+        groups.entries.forEachIndexed { index, (creds, providerChannels) ->
+            if (providerChannels.isEmpty()) return@forEachIndexed
+            onProgress(
+                IptvLoadProgress(
+                    "Loading full Xtream guide ${index + 1}/${groups.size}...",
+                    90 + ((index * 6) / groups.size.coerceAtLeast(1))
+                )
+            )
+            val parsed = fetchXtreamFullEpg(creds, providerChannels, onProgress)
+            if (!parsed.isNullOrEmpty()) {
+                merged.putAll(parsed)
+            }
+        }
+        return merged.takeIf { hasAnyProgramData(it) }
+    }
+
     private fun addChannelIdToLookup(
         target: MutableMap<String, MutableList<String>>,
         rawKey: String?,
@@ -5353,6 +5401,70 @@ class IptvRepository @Inject constructor(
             epgIdToChannelIds = epgIdToChannelIds,
             streamIdToChannelIds = streamIdToChannelIds,
             channelsById = channels.associateBy { it.id }
+        )
+    }
+
+    private suspend fun fetchXtreamFullEpg(
+        creds: XtreamCredentials,
+        channels: List<IptvChannel>,
+        onProgress: (IptvLoadProgress) -> Unit
+    ): Map<String, IptvNowNext>? {
+        if (channels.isEmpty()) return null
+
+        val epgIdToChannelIds = mutableMapOf<String, MutableList<String>>()
+        val streamIdToChannelIds = mutableMapOf<String, MutableList<String>>()
+        for (ch in channels) {
+            ch.epgId?.let { eid ->
+                addChannelIdToLookup(epgIdToChannelIds, eid, ch.id)
+            }
+            resolveXtreamStreamId(ch)?.let { sid ->
+                streamIdToChannelIds.getOrPut(sid.toString()) { mutableListOf() }.add(ch.id)
+            }
+        }
+
+        val xtreamChannels = channels.filter { resolveXtreamStreamId(it) != null }
+        val representatives = representativeXtreamEpgStreamIds(
+            channels = xtreamChannels,
+            includeStreamsWithoutGuideKey = false
+        )
+        val streamIds = representatives.streamIds
+        if (streamIds.isEmpty()) return null
+
+        onProgress(IptvLoadProgress("Loading full Xtream EPG...", 90))
+        System.err.println(
+            "[EPG] Xtream full EPG: fetching ${streamIds.size} representative streams " +
+                "for ${xtreamChannels.size}/${channels.size} channels skippedNoGuide=${representatives.skippedWithoutGuideKey}"
+        )
+
+        var errors = 0
+        var fetched = 0
+        val total = streamIds.size.coerceAtLeast(1)
+        val allListings = fetchXtreamFullEpgListingsAsync(
+            creds = creds,
+            streamIds = streamIds,
+            timeoutMillis = xtreamFullEpgSweepTimeout(streamIds.size),
+            parallelism = xtreamFullEpgSweepConcurrency(streamIds.size)
+        ) { _, hadError ->
+            fetched++
+            if (hadError) errors++
+            if (fetched % 50 == 0) {
+                val pct = (90 + ((fetched.toLong() * 8L) / total.toLong())).toInt().coerceIn(90, 98)
+                onProgress(IptvLoadProgress("Loading full EPG... $fetched/$total streams", pct))
+            }
+        }
+        System.err.println("[EPG] Xtream full EPG done: ${allListings.size} listings, $fetched fetched, $errors errors")
+
+        if (errors > fetched / 2 && fetched > 20) return null
+        if (allListings.isEmpty()) return null
+
+        onProgress(IptvLoadProgress("Parsing full EPG data (${allListings.size} listings)...", 98))
+        return buildNowNextFromXtreamListings(
+            creds = creds,
+            listings = allListings,
+            epgIdToChannelIds = epgIdToChannelIds,
+            streamIdToChannelIds = streamIdToChannelIds,
+            channelsById = channels.associateBy { it.id },
+            forceCatchupHistory = true
         )
     }
 
@@ -5510,14 +5622,16 @@ class IptvRepository @Inject constructor(
         creds: XtreamCredentials,
         streamIds: List<Int>,
         timeoutMillis: Long = 16_000L,
+        parallelism: Int = 4,
         onStreamProcessed: (Int, Boolean) -> Unit = { _, _ -> }
     ): List<XtreamEpgListing> {
         val distinctStreamIds = streamIds.distinct()
         if (distinctStreamIds.isEmpty()) return emptyList()
-        val gate = Semaphore(4)
+        val safeParallelism = parallelism.coerceIn(1, 32)
+        val gate = Semaphore(safeParallelism)
         val listingsResult = ConcurrentLinkedQueue<XtreamEpgListing>()
         val completed = withTimeoutOrNull(timeoutMillis) {
-            withContext(Dispatchers.IO.limitedParallelism(4)) {
+            withContext(Dispatchers.IO.limitedParallelism(safeParallelism)) {
                 distinctStreamIds.map { sid ->
                     async {
                         gate.withPermit {
@@ -5571,6 +5685,23 @@ class IptvRepository @Inject constructor(
             streamCount > 2 -> 30_000L
             streamCount > 1 -> 24_000L
             else -> 18_000L
+        }
+
+    private fun xtreamFullEpgSweepTimeout(streamCount: Int): Long =
+        when {
+            streamCount > 8_000 -> 420_000L
+            streamCount > 4_000 -> 300_000L
+            streamCount > 1_200 -> 180_000L
+            streamCount > 256 -> 90_000L
+            else -> 45_000L
+        }
+
+    private fun xtreamFullEpgSweepConcurrency(streamCount: Int): Int =
+        when {
+            streamCount > 4_000 -> 24
+            streamCount > 1_200 -> 18
+            streamCount > 256 -> 12
+            else -> 6
         }
 
     /**

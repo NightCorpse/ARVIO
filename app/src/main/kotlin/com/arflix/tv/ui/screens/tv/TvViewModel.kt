@@ -716,15 +716,6 @@ class TvViewModel @Inject constructor(
         val largeList = isLargeIptvList(channels.size)
         if (!state.isConfigured || channels.isEmpty()) return
         if (!hasNetworkEpgSource(state.config)) return
-        if (largeList && !force) {
-            // Never start a broad 50k-channel EPG refresh from the TV page.
-            // Large providers must paint from cache plus scoped visible-channel
-            // refreshes; full XMLTV downloads can take minutes and contend with
-            // live playback/network bandwidth.
-            setEpgBackfillInProgress(false)
-            System.err.println("[EPG-Complete] Large list uses visible scoped refresh only")
-            return
-        }
         val indexedGuideChannels = if (largeList) {
             runCatching { iptvRepository.indexedGuideChannelCount() }.getOrDefault(0)
         } else {
@@ -800,14 +791,14 @@ class TvViewModel @Inject constructor(
         }
         setEpgBackfillInProgress(true)
         completeEpgBackfillJob = viewModelScope.launch(Dispatchers.IO) {
-            delay(if (largeList) 6_000L else if (hasGuideData) 2_000L else 250L)
+            delay(if (largeList && hasGuideData) 1_500L else if (largeList) 250L else if (hasGuideData) 2_000L else 250L)
             val backfillResult = runCatching {
                 kotlinx.coroutines.withTimeoutOrNull(900_000L) {
                     iptvRepository.loadSnapshot(
                         forcePlaylistReload = false,
                         forceEpgReload = true,
                         allowNetworkEpgFetch = true,
-                        allowBroadShortEpg = true,
+                        allowBroadShortEpg = !largeList,
                         onProgress = { progress ->
                             System.err.println("[EPG-Complete] ${progress.message} ${progress.percent ?: ""}".trim())
                         }
@@ -927,13 +918,14 @@ class TvViewModel @Inject constructor(
 
     private fun requestVisibleCompleteEpgBackfill(priorityChannelIds: Collection<String> = emptyList()) {
         val isLargeList = isLargeIptvList(_uiState.value.snapshot.channels.size)
-        if (isLargeList) {
-            System.err.println("[EPG-Complete] Visible guide unresolved; large list uses scoped XMLTV fallback instead")
-            return
-        }
         val now = System.currentTimeMillis()
         if (now - lastVisibleForcedCompleteEpgAt < 60_000L) return
         lastVisibleForcedCompleteEpgAt = now
+        if (isLargeList) {
+            System.err.println("[EPG-Complete] Visible guide unresolved; ensuring large-list full XMLTV background pass")
+            startCompleteEpgBackfill(force = true, priorityChannelIds = priorityChannelIds)
+            return
+        }
         startCompleteEpgBackfill(force = true, priorityChannelIds = priorityChannelIds)
     }
 
