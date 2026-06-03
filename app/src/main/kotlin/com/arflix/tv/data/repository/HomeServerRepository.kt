@@ -2166,9 +2166,28 @@ class HomeServerRepository @Inject constructor(
     private fun JsonElement.asStringOrNull(): String? =
         runCatching { takeUnless { it.isJsonNull }?.asString }.getOrNull()
 
+    private val xmlAttributeRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
     private fun String.xmlAttribute(name: String): String {
-        val pattern = Regex("""\b${Regex.escape(name)}=["']([^"']*)["']""")
-        return pattern.find(this)?.groupValues?.getOrNull(1).orEmpty().xmlDecoded()
+        val target = "$name="
+        var index = this.indexOf(target)
+        // Ensure word boundary check to avoid substring matches
+        while (index != -1) {
+            if (index == 0 || !(this[index - 1].isLetterOrDigit() || this[index - 1] == '_')) {
+                val valueStart = index + target.length
+                if (valueStart < this.length) {
+                    val quote = this[valueStart]
+                    if (quote == '"' || quote == '\'') {
+                        val valueEnd = this.indexOf(quote, valueStart + 1)
+                        if (valueEnd != -1) {
+                            return this.substring(valueStart + 1, valueEnd).xmlDecoded()
+                        }
+                    }
+                }
+            }
+            index = this.indexOf(target, index + target.length)
+        }
+        return ""
     }
 
     private fun String.xmlBooleanAttribute(name: String): Boolean {

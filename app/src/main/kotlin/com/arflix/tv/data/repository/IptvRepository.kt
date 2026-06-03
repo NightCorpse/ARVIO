@@ -1004,7 +1004,7 @@ class IptvRepository @Inject constructor(
     }
 
     private fun String.replaceDurationScalePlaceholders(durationSec: Long): String {
-        return Regex("""\$\{duration:(\d+)\}|\{duration:(\d+)\}""").replace(this) { match ->
+        return DURATION_SCALE_REGEX.replace(this) { match ->
             val divisor = (match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
                 ?: match.groupValues.getOrNull(2))
                 ?.toLongOrNull()
@@ -1014,8 +1014,10 @@ class IptvRepository @Inject constructor(
         }
     }
 
+    private val datePatternRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
     private fun String.replaceDatePatternPlaceholders(key: String, dateTime: LocalDateTime): String {
-        val regex = Regex("""\$\{""" + key + """:([^}]+)\}|\{""" + key + """:([^}]+)\}""")
+        val regex = datePatternRegexCache.getOrPut(key) { Regex("""\$\{""" + key + """:([^}]+)\}|\{""" + key + """:([^}]+)\}""") }
         return regex.replace(this) { match ->
             val pattern = match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() }
                 ?: match.groupValues.getOrNull(2)
@@ -1092,11 +1094,9 @@ class IptvRepository @Inject constructor(
     }
 
     private fun redactIptvUrl(url: String): String {
-        val withoutQuerySecrets = Regex(
-            pattern = """(?i)([?&](?:username|user|uname|password|pass|pwd)=)[^&]+"""
-        ).replace(url) { match -> "${match.groupValues[1]}***" }
+        val withoutQuerySecrets = URL_QUERY_SECRETS_REGEX.replace(url) { match -> "${match.groupValues[1]}***" }
 
-        return Regex("""(?i)(/(?:live|movie|series|timeshift)/)([^/]+)/([^/]+)(/)""")
+        return URL_PATH_SECRETS_REGEX
             .replace(withoutQuerySecrets) { match ->
                 "${match.groupValues[1]}***/***${match.groupValues[4]}"
             }
@@ -6522,8 +6522,8 @@ class IptvRepository @Inject constructor(
         val base = epgId?.takeIf { it.isNotBlank() } ?: name
         val normalizedBase = normalizeLooseKey(
             base
-                .replace(Regex("""\b(4K|UHD|FHD|HD|SD|2160P?|1080P?|720P?|576P?|480P?)\b""", RegexOption.IGNORE_CASE), " ")
-                .replace(Regex("""\[[^\]]*]|\([^)]*\)"""), " ")
+                .replace(QUALITY_WORDS_REGEX, " ")
+                .replace(BRACKET_PAREN_REGEX, " ")
         )
         val normalizedGroup = normalizeLooseKey(group)
         return listOf(normalizedGroup, normalizedBase).filter { it.isNotBlank() }.joinToString(":")
@@ -7597,6 +7597,12 @@ class IptvRepository @Inject constructor(
     // ════════════════════════════════════════════════════════════════════════
 
     private companion object {
+        private val DURATION_SCALE_REGEX = Regex("""\$\{duration:(\d+)\}|\{duration:(\d+)\}""")
+        private val URL_QUERY_SECRETS_REGEX = Regex("""(?i)([?&](?:username|user|uname|password|pass|pwd)=)[^&]+""")
+        private val URL_PATH_SECRETS_REGEX = Regex("""(?i)(/(?:live|movie|series|timeshift)/)([^/]+)/([^/]+)(/)""")
+        private val QUALITY_WORDS_REGEX = Regex("""\b(4K|UHD|FHD|HD|SD|2160P?|1080P?|720P?|576P?|480P?)\b""", RegexOption.IGNORE_CASE)
+        private val BRACKET_PAREN_REGEX = Regex("""\[[^\]]*]|\([^)]*\)""")
+
         const val ENC_PREFIX = "encv1:"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val CONFIG_KEY_ALIAS = "arvio_iptv_config_v1"
