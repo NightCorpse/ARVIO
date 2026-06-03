@@ -433,12 +433,7 @@ class TvViewModel @Inject constructor(
         if (channel == null) return false
         if (channel.catchupDays > 0) return true
         if (!channel.catchupType.isNullOrBlank() || !channel.catchupSource.isNullOrBlank()) return true
-        if (channel.xtreamStreamId != null) return true
-        val streamUrl = channel.streamUrl
-        return streamUrl.contains("/live/", ignoreCase = true) ||
-            streamUrl.contains("/timeshift/", ignoreCase = true) ||
-            channel.id.contains(":xtream:", ignoreCase = true) ||
-            channel.id.startsWith("xtream:", ignoreCase = true)
+        return channel.streamUrl.contains("/timeshift/", ignoreCase = true)
     }
 
     private fun recentCatchupCount(
@@ -447,7 +442,7 @@ class TvViewModel @Inject constructor(
     ): Int {
         return item?.recent
             .orEmpty()
-            .count { it.endUtcMillis <= now && it.endUtcMillis >= now - 48L * 60L * 60_000L }
+            .count { it.catchupAvailable != false && it.endUtcMillis <= now && it.endUtcMillis >= now - 48L * 60L * 60_000L }
     }
 
     private fun hasRecentCatchupHistory(

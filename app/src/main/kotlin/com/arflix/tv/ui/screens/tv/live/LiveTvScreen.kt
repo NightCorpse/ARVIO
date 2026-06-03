@@ -298,11 +298,7 @@ private fun EnrichedChannel?.supportsCatchupHistory(): Boolean {
     val source = this?.source ?: return false
     if (source.catchupDays > 0) return true
     if (!source.catchupType.isNullOrBlank() || !source.catchupSource.isNullOrBlank()) return true
-    if (source.xtreamStreamId != null) return true
-    return source.streamUrl.contains("/live/", ignoreCase = true) ||
-        source.streamUrl.contains("/timeshift/", ignoreCase = true) ||
-        source.id.contains(":xtream:", ignoreCase = true) ||
-        source.id.startsWith("xtream:", ignoreCase = true)
+    return source.streamUrl.contains("/timeshift/", ignoreCase = true)
 }
 
 @Composable

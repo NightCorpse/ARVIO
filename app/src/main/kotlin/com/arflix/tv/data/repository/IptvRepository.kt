@@ -5093,7 +5093,8 @@ class IptvRepository @Inject constructor(
         @SerializedName("channel_id") val channelId: String? = null,
         @SerializedName("start_timestamp") val startTimestamp: String? = null,
         @SerializedName("stop_timestamp") val stopTimestamp: String? = null,
-        @SerializedName("stream_id") val streamId: String? = null
+        @SerializedName("stream_id") val streamId: String? = null,
+        @SerializedName("has_archive") val hasArchive: Int? = null
     )
 
     private data class XtreamEpgResponse(
@@ -5625,27 +5626,32 @@ class IptvRepository @Inject constructor(
                 title = title,
                 description = description,
                 startUtcMillis = startMs,
-                endUtcMillis = stopMs
+                endUtcMillis = stopMs,
+                catchupAvailable = listing.hasArchive?.let { it > 0 }
             )
 
             // Resolve which IptvChannel IDs this listing maps to
             val resolvedChannelIds = mutableSetOf<String>()
 
-            // Match by epg_id / channel_id field
-            listing.channelId?.let { cid ->
-                resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, cid))
-            }
-            listing.lang?.let { lang ->
-                resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, lang))
-            }
-            listing.epgId?.let { eid ->
-                // epg_id can be the stream_id in some providers
-                streamIdToChannelIds[eid]?.let { resolvedChannelIds.addAll(it) }
-                resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, eid))
-            }
-            // Match by stream_id
-            listing.streamId?.let { sid ->
-                streamIdToChannelIds[sid]?.let { resolvedChannelIds.addAll(it) }
+            val exactStreamIds = listing.streamId
+                ?.let { sid -> streamIdToChannelIds[sid] }
+                .orEmpty()
+            if (forceCatchupHistory && exactStreamIds.isNotEmpty()) {
+                resolvedChannelIds.addAll(exactStreamIds)
+            } else {
+                // Match by epg_id / channel_id field
+                listing.channelId?.let { cid ->
+                    resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, cid))
+                }
+                listing.lang?.let { lang ->
+                    resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, lang))
+                }
+                listing.epgId?.let { eid ->
+                    // epg_id can be the stream_id in some providers
+                    streamIdToChannelIds[eid]?.let { resolvedChannelIds.addAll(it) }
+                    resolvedChannelIds.addAll(resolveChannelIdsFromLookup(epgIdToChannelIds, eid))
+                }
+                resolvedChannelIds.addAll(exactStreamIds)
             }
 
             for (channelId in resolvedChannelIds) {
@@ -5687,7 +5693,9 @@ class IptvRepository @Inject constructor(
                     val p = sorted[i]
                     when {
                         p.endUtcMillis <= nowMs && p.endUtcMillis > recentCutoff -> {
-                            addRecentCandidate(recent, p, recentProgramLimitForChannel(channelsById[channelId], forceCatchupHistory))
+                            if (p.catchupAvailable != false) {
+                                addRecentCandidate(recent, p, recentProgramLimitForChannel(channelsById[channelId], forceCatchupHistory))
+                            }
                         }
                         p.isLive(nowMs) -> now = p
                         p.startUtcMillis > nowMs && next == null -> next = p
