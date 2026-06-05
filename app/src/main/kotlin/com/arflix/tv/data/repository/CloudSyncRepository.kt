@@ -543,6 +543,16 @@ class CloudSyncRepository @Inject constructor(
         return root.toString()
     }
 
+    @Volatile
+    private var lastPushedPayloadHash: Int? = null
+
+    @Volatile
+    var pushFailureCount: Int = 0
+        private set
+
+    @Volatile
+    private var lastPushAttemptAt: Long = 0L
+
     // ══════════════════════════════════════════════════════════
     //  PUSH LOCAL STATE TO CLOUD
     // ══════════════════════════════════════════════════════════
@@ -552,6 +562,20 @@ class CloudSyncRepository @Inject constructor(
     }
 
     private suspend fun pushToCloudLocked(): Result<Unit> {
+        val now = System.currentTimeMillis()
+        if (pushFailureCount > 0) {
+            val requiredBackoffMs = (2_000L * (1 shl (pushFailureCount - 1).coerceAtMost(6))).coerceAtMost(300_000L)
+            if (now - lastPushAttemptAt < requiredBackoffMs) {
+                AppLogger.breadcrumb(
+                    tag = "CloudSync",
+                    message = "push_skipped_backoff delay=${requiredBackoffMs}",
+                    severity = "info"
+                )
+                return Result.failure(IllegalStateException("Exponential backoff active: wait ${requiredBackoffMs}ms"))
+            }
+        }
+        lastPushAttemptAt = now
+
         if (authRepository.getCurrentUserId().isNullOrBlank()) {
             AppLogger.breadcrumb(
                 tag = "CloudSync",
@@ -562,6 +586,7 @@ class CloudSyncRepository @Inject constructor(
         }
         val payload = runCatching { buildCloudSnapshotJson() }.getOrElse {
             markPushFailedDirty()
+            pushFailureCount++
             AppLogger.recordException(
                 throwable = it,
                 context = mapOf(
@@ -572,9 +597,25 @@ class CloudSyncRepository @Inject constructor(
             )
             return Result.failure(it)
         }
+
+        val payloadHash = runCatching {
+            JSONObject(payload).apply { remove("updatedAt") }.toString().hashCode()
+        }.getOrNull()
+
+        if (payloadHash != null && payloadHash == lastPushedPayloadHash && !isPushDirty && pushFailureCount == 0) {
+            AppLogger.breadcrumb(
+                tag = "CloudSync",
+                message = "push_skipped_duplicate_hash",
+                severity = "info"
+            )
+            return Result.success(Unit)
+        }
+
         val result = authRepository.saveAccountSyncPayload(payload)
         if (result.isSuccess) {
             clearLocalDirtyAfterSuccessfulPush()
+            lastPushedPayloadHash = payloadHash
+            pushFailureCount = 0
             AppLogger.breadcrumb(
                 tag = "CloudSync",
                 message = "push_success size=${payloadSizeBucket(payload)}",
@@ -586,13 +627,15 @@ class CloudSyncRepository @Inject constructor(
             // Without this, a single network hiccup would permanently diverge the
             // cloud state until the user explicitly changes another setting.
             markPushFailedDirty()
+            pushFailureCount++
             AppLogger.recordException(
                 throwable = result.exceptionOrNull() ?: IllegalStateException("Cloud push failed"),
                 context = mapOf(
                     "error_area" to "CloudSync",
                     "cloud_flow" to "push_save_payload",
                     "dirty" to isPushDirty.toString(),
-                    "payload_size" to payloadSizeBucket(payload)
+                    "payload_size" to payloadSizeBucket(payload),
+                    "failure_count" to pushFailureCount.toString()
                 )
             )
         }
