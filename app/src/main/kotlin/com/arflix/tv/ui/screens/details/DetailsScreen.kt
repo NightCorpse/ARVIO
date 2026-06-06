@@ -248,6 +248,16 @@ fun DetailsScreen(
     var seasonSelectDownAtMs by remember { mutableLongStateOf(0L) }
     var ignoreFirstResumeRefresh by remember(mediaType, mediaId, initialSeason, initialEpisode) { mutableStateOf(true) }
 
+    fun requestFastAutoPlay(imdbId: String?, season: Int?, episode: Int?, startPositionMs: Long?) {
+        showStreamSelector = false
+        viewModel.loadStreams(imdbId, season, episode)
+        pendingAutoPlayRequest = PendingAutoPlayRequest(
+            season = season,
+            episode = episode,
+            startPositionMs = startPositionMs
+        )
+    }
+
     // Spoiler blur setting
     var spoilerBlurEnabled by remember { mutableStateOf(false) }
     LaunchedEffect(context, currentProfile) {
@@ -316,37 +326,39 @@ fun DetailsScreen(
 
     LaunchedEffect(pendingAutoPlayRequest, uiState.isLoadingStreams, uiState.streams) {
         val request = pendingAutoPlayRequest ?: return@LaunchedEffect
-        if (uiState.isLoadingStreams) return@LaunchedEffect
 
         val validStreams = uiState.streams.filter(::isAutoPlayableStream)
         val minThreshold = minQualityThreshold(uiState.autoPlayMinQuality)
-        val singleStream = validStreams.singleOrNull()
+        val selectedStream = bestAutoPlayStream(validStreams, minThreshold)
 
         when {
-            singleStream != null && uiState.autoPlaySingleSource && qualityScoreForAutoPlay(singleStream.quality) >= minThreshold -> {
+            selectedStream != null -> {
                 onNavigateToPlayer(
                     mediaType,
                     mediaId,
                     request.season,
                     request.episode,
                     uiState.imdbId,
-                    singleStream.url?.takeIf { it.isNotBlank() },
-                    singleStream.addonId.takeIf { it.isNotBlank() },
-                    singleStream.source.takeIf { it.isNotBlank() },
+                    selectedStream.url?.takeIf { it.isNotBlank() },
+                    selectedStream.addonId.takeIf { it.isNotBlank() },
+                    selectedStream.source.takeIf { it.isNotBlank() },
                     request.startPositionMs
                 )
+                pendingAutoPlayRequest = null
             }
-            validStreams.size > 1 || uiState.streams.isNotEmpty() -> {
+            uiState.isLoadingStreams -> Unit
+            validStreams.isNotEmpty() || uiState.streams.isNotEmpty() -> {
                 showStreamSelector = true
+                pendingAutoPlayRequest = null
             }
             else -> {
                 // When no streams found, show the StreamSelector with its
                 // friendly "no addons" / "no sources" empty state instead of
                 // navigating to the player which would show a scary error.
                 showStreamSelector = true
+                pendingAutoPlayRequest = null
             }
         }
-        pendingAutoPlayRequest = null
     }
 
     // Sync episodeIndex with initialEpisodeIndex from ViewModel
@@ -398,10 +410,7 @@ fun DetailsScreen(
                         viewModel.loadStreams(state.imdbId, season, episode)
                     } else {
                         // Autoplay ON → go straight to the player; PlayerScreen auto-picks.
-                        onNavigateToPlayer(
-                            mediaType, mediaId, season, episode,
-                            state.imdbId, null, null, null, startPositionMs
-                        )
+                        requestFastAutoPlay(state.imdbId, season, episode, startPositionMs)
                     }
                 }
                 1 -> { // Sources
@@ -447,10 +456,7 @@ fun DetailsScreen(
                     showStreamSelector = true
                     viewModel.loadStreams(state.imdbId, ep.seasonNumber, ep.episodeNumber)
                 } else {
-                    onNavigateToPlayer(
-                        mediaType, mediaId,
-                        ep.seasonNumber, ep.episodeNumber, state.imdbId, null, null, null, null
-                    )
+                    requestFastAutoPlay(state.imdbId, ep.seasonNumber, ep.episodeNumber, null)
                 }
             }
         }
@@ -718,18 +724,8 @@ fun DetailsScreen(
                                                 showStreamSelector = true
                                                 viewModel.loadStreams(uiState.imdbId, season, episode)
                                             } else {
-                                                // Autoplay ON → go straight to the player; PlayerScreen auto-picks.
-                                                onNavigateToPlayer(
-                                                    mediaType,
-                                                    mediaId,
-                                                    season,
-                                                    episode,
-                                                    uiState.imdbId,
-                                                    null,
-                                                    null,
-                                                    null,
-                                                    startPositionMs
-                                                )
+                                                // Autoplay ON: pick a concrete stream first, then open PlayerScreen.
+                                                requestFastAutoPlay(uiState.imdbId, season, episode, startPositionMs)
                                             }
                                         }
                                         1 -> { // Sources - Show StreamSelector for manual selection
@@ -758,10 +754,7 @@ fun DetailsScreen(
                                             showStreamSelector = true
                                             viewModel.loadStreams(uiState.imdbId, ep.seasonNumber, ep.episodeNumber)
                                         } else {
-                                            onNavigateToPlayer(
-                                                mediaType, mediaId,
-                                                ep.seasonNumber, ep.episodeNumber, uiState.imdbId, null, null, null, null
-                                            )
+                                            requestFastAutoPlay(uiState.imdbId, ep.seasonNumber, ep.episodeNumber, null)
                                         }
                                     }
                                 }
@@ -985,10 +978,7 @@ fun DetailsScreen(
                 isWatched = episode.isWatched,
                 onPlay = {
                     showEpisodeContextMenu = false
-                    onNavigateToPlayer(
-                        mediaType, mediaId,
-                        episode.seasonNumber, episode.episodeNumber, uiState.imdbId, null, null, null, null
-                    )
+                    requestFastAutoPlay(uiState.imdbId, episode.seasonNumber, episode.episodeNumber, null)
                 },
                 onSelectSource = {
                     showEpisodeContextMenu = false
@@ -1050,16 +1040,6 @@ private data class PendingAutoPlayRequest(
     val startPositionMs: Long?
 )
 
-private fun qualityScoreForAutoPlay(quality: String): Int {
-    return when {
-        quality.contains("4K", ignoreCase = true) || quality.contains("2160p", ignoreCase = true) -> 4
-        quality.contains("1080p", ignoreCase = true) -> 3
-        quality.contains("720p", ignoreCase = true) -> 2
-        quality.contains("480p", ignoreCase = true) -> 1
-        else -> 0
-    }
-}
-
 /** Score quality from ALL stream text (source + quality + addonName) for more accurate detection */
 private fun qualityScoreForStream(stream: com.arflix.tv.data.model.StreamSource): Int {
     val combined = listOfNotNull(stream.quality, stream.source, stream.addonName).joinToString(" ")
@@ -1070,6 +1050,45 @@ private fun qualityScoreForStream(stream: com.arflix.tv.data.model.StreamSource)
         combined.contains("480p", ignoreCase = true) -> 1
         else -> 0 // Truly unknown
     }
+}
+
+private fun bestAutoPlayStream(
+    streams: List<com.arflix.tv.data.model.StreamSource>,
+    minQualityScore: Int
+): com.arflix.tv.data.model.StreamSource? {
+    return streams
+        .asSequence()
+        .filter { stream ->
+            stream.behaviorHints?.notWebReady != true &&
+                qualityScoreForStream(stream) >= minQualityScore
+        }
+        .sortedWith(
+            compareByDescending<com.arflix.tv.data.model.StreamSource> { qualityScoreForStream(it) }
+                .thenByDescending { if (it.behaviorHints?.cached == true) 1 else 0 }
+                .thenByDescending { autoPlaySizeBytes(it) }
+                .thenBy { it.addonName.lowercase() }
+                .thenBy { it.source.lowercase() }
+        )
+        .firstOrNull()
+}
+
+private fun autoPlaySizeBytes(stream: com.arflix.tv.data.model.StreamSource): Long {
+    stream.sizeBytes?.let { return it }
+    val raw = stream.size.trim()
+    if (raw.isBlank()) return 0L
+    val match = Regex("""(?i)(\d+(?:[\.,]\d+)?)\s*(TB|GB|MB|KB|B|GiB|MiB|KiB)?""")
+        .find(raw)
+        ?: return 0L
+    val value = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return 0L
+    val unit = match.groupValues.getOrNull(2)?.uppercase(Locale.US).orEmpty()
+    val multiplier = when (unit) {
+        "TB" -> 1024.0 * 1024.0 * 1024.0 * 1024.0
+        "GB", "GIB" -> 1024.0 * 1024.0 * 1024.0
+        "MB", "MIB" -> 1024.0 * 1024.0
+        "KB", "KIB" -> 1024.0
+        else -> 1.0
+    }
+    return (value * multiplier).toLong()
 }
 
 private fun minQualityThreshold(value: String): Int {
