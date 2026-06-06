@@ -1,6 +1,7 @@
 package com.arflix.tv.data.repository
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -60,6 +61,7 @@ class CloudSyncRepository @Inject constructor(
     private val profileAvatarImageManager: ProfileAvatarImageManager,
     private val invalidationBus: CloudSyncInvalidationBus
 ) {
+    private val TAG = "CloudSync"
     private val gson = Gson()
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cloudSyncLocalDirtyAtKey = longPreferencesKey("cloud_sync_local_dirty_at")
@@ -150,7 +152,7 @@ class CloudSyncRepository @Inject constructor(
         }
     }
 
-    private suspend fun hasPendingLocalChanges(): Boolean {
+    suspend fun hasPendingLocalChanges(): Boolean {
         val storedDirtyAt = context.settingsDataStore.data.first()[cloudSyncLocalDirtyAtKey] ?: 0L
         if (storedDirtyAt > 0L) {
             latestLocalDirtyAt = max(latestLocalDirtyAt, storedDirtyAt)
@@ -616,6 +618,7 @@ class CloudSyncRepository @Inject constructor(
             clearLocalDirtyAfterSuccessfulPush()
             lastPushedPayloadHash = payloadHash
             pushFailureCount = 0
+            Log.i(TAG, "Push succeeded size=${payloadSizeBucket(payload)}")
             AppLogger.breadcrumb(
                 tag = "CloudSync",
                 message = "push_success size=${payloadSizeBucket(payload)}",
@@ -628,6 +631,10 @@ class CloudSyncRepository @Inject constructor(
             // cloud state until the user explicitly changes another setting.
             markPushFailedDirty()
             pushFailureCount++
+            Log.w(
+                TAG,
+                "Push failed size=${payloadSizeBucket(payload)} failures=$pushFailureCount error=${result.exceptionOrNull()?.message}"
+            )
             AppLogger.recordException(
                 throwable = result.exceptionOrNull() ?: IllegalStateException("Cloud push failed"),
                 context = mapOf(
@@ -684,6 +691,7 @@ class CloudSyncRepository @Inject constructor(
 
         val payload = payloadResult.getOrNull().orEmpty()
         if (payload.isBlank()) {
+            Log.i(TAG, "Pull found no cloud backup")
             AppLogger.breadcrumb(
                 tag = "CloudSync",
                 message = "pull_no_backup",
@@ -697,6 +705,7 @@ class CloudSyncRepository @Inject constructor(
         val payloadHash = payload.hashCode()
 
         if (lastAppliedHash == payloadHash) {
+            Log.i(TAG, "Pull skipped identical payload")
             AppLogger.breadcrumb(
                 tag = "CloudSync",
                 message = "pull_skipped_identical_payload",
@@ -712,6 +721,7 @@ class CloudSyncRepository @Inject constructor(
             markCloudPayloadApplied(payload, payloadHash)
         }.fold(
             onSuccess = {
+                Log.i(TAG, "Pull restored size=${payloadSizeBucket(payload)}")
                 AppLogger.breadcrumb(
                     tag = "CloudSync",
                     message = "pull_restored size=${payloadSizeBucket(payload)}",
@@ -720,6 +730,7 @@ class CloudSyncRepository @Inject constructor(
                 RestoreResult.RESTORED
             },
             onFailure = { e ->
+                Log.w(TAG, "Pull failed size=${payloadSizeBucket(payload)} error=${e.message}")
                 System.err.println("[CLOUD-SYNC] pullFromCloud failed: ${e.message}")
                 AppLogger.recordException(
                     throwable = e,

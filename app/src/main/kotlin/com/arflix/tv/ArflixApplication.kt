@@ -116,12 +116,11 @@ class ArflixApplication : Application(), Configuration.Provider, ImageLoaderFact
             delay(2_500L)
             cloudSyncCoordinator.start()
             if (!authRepository.getCurrentUserId().isNullOrBlank()) {
-                // Let first render/navigation settle before cloud restore and
-                // WebSocket work compete with image decode and Compose lists.
-                delay(20_000L)
-                runCatching { cloudSyncRepository.pullFromCloud() }
-                // Start realtime WebSocket listener for instant cross-device sync
                 realtimeSyncManager.start()
+                // Pull early enough that reopening the app feels like an actual
+                // sync, while still letting the first frame and profile bootstrap land.
+                delay(3_000L)
+                runCatching { cloudSyncRepository.pullFromCloud() }
             }
         }
 
@@ -135,15 +134,24 @@ class ArflixApplication : Application(), Configuration.Provider, ImageLoaderFact
         // Observe auth state: start realtime on login, stop on logout
         appScope.launch {
             authRepository.authState.collectLatest { state ->
-                if (state is AuthState.Authenticated) {
-                    delay(20_000L)
-                    if (!authRepository.getCurrentUserId().isNullOrBlank()) {
-                        cloudSyncCoordinator.start()
-                        realtimeSyncManager.start()
+                when (state) {
+                    is AuthState.Authenticated -> {
+                        delay(2_000L)
+                        if (!authRepository.getCurrentUserId().isNullOrBlank()) {
+                            cloudSyncCoordinator.start()
+                            realtimeSyncManager.start()
+                            runCatching { cloudSyncRepository.pullFromCloud() }
+                        }
                     }
-                } else {
-                    realtimeSyncManager.stop()
-                    cloudSyncCoordinator.stop()
+                    AuthState.NotAuthenticated -> {
+                        realtimeSyncManager.stop()
+                        cloudSyncCoordinator.stop()
+                    }
+                    is AuthState.Error -> {
+                        realtimeSyncManager.stop()
+                        cloudSyncCoordinator.stop()
+                    }
+                    AuthState.Loading -> Unit
                 }
             }
         }

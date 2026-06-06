@@ -26,8 +26,9 @@ class CloudSyncWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         Log.i(TAG, "Executing background cloud sync recovery")
 
-        // If not dirty, nothing to do
-        if (!cloudSyncRepository.isPushDirty) {
+        // If not dirty, nothing to do. Check persisted state too because the
+        // process may have restarted after the local change was queued.
+        if (!cloudSyncRepository.hasPendingLocalChanges()) {
             Log.i(TAG, "Cloud state is not dirty. Skipping sync.")
             return Result.success()
         }
