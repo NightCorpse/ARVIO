@@ -846,6 +846,7 @@ fun DetailsScreen(
             // Use skeleton loader for better UX
             SkeletonDetailsPage(
                 isTV = mediaType == MediaType.TV,
+                isMobile = isMobile,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
