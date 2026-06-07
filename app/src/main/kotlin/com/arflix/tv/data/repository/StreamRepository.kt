@@ -1270,6 +1270,8 @@ class StreamRepository @Inject constructor(
     private val ADDON_SINGLE_STREAM_REQUEST_TIMEOUT_MS = 4_000L
     private val ADDON_NATIVE_ANIME_EPISODE_TIMEOUT_MS = 24_000L
     private val ADDON_NATIVE_ANIME_SINGLE_STREAM_REQUEST_TIMEOUT_MS = 12_000L
+    private val ANIME_ID_LOOKUP_TIMEOUT_MS = 3_000L
+    private val NATIVE_ANIME_ID_LOOKUP_TIMEOUT_MS = 8_000L
     // Subtitles should not block playback but need enough time on slow connections.
     private val SUBTITLE_TIMEOUT_MS = 6_000L
     // If addons return nothing, allow Xtream VOD lookup to recover playback.
@@ -1511,8 +1513,8 @@ class StreamRepository @Inject constructor(
                         originalLanguage = originalLanguage,
                         nativeAnimeAddonAvailable = nativeAnimeAddon
                     )
-                val animeQuery = if (resolveAsAnime) {
-                    withTimeoutOrNull(3_000L) {
+                suspend fun resolveAnimeQuery(timeoutMs: Long): String? {
+                    return withTimeoutOrNull(timeoutMs) {
                         animeMapper.resolveAnimeEpisodeQuery(
                             tmdbId = tmdbId,
                             tvdbId = tvdbId,
@@ -1522,6 +1524,15 @@ class StreamRepository @Inject constructor(
                             episode = episode
                         )
                     }
+                }
+
+                val animeLookupTimeoutMs = if (nativeAnimeAddon) {
+                    NATIVE_ANIME_ID_LOOKUP_TIMEOUT_MS
+                } else {
+                    ANIME_ID_LOOKUP_TIMEOUT_MS
+                }
+                val animeQuery = if (resolveAsAnime) {
+                    resolveAnimeQuery(animeLookupTimeoutMs)
                 } else null
 
                 val seriesId = "$imdbId:$season:$episode"
@@ -1617,6 +1628,7 @@ class StreamRepository @Inject constructor(
                 } else null
 
                 var addonStreams = emptyList<StreamSource>()
+                val attemptedEpisodeCandidateKeys = linkedSetOf<String>()
                 for (candidate in buildEpisodeIdCandidates(
                     seriesId = seriesId,
                     animeQuery = if (useKitsuFallback) animeQuery else null,
@@ -1624,6 +1636,7 @@ class StreamRepository @Inject constructor(
                     preferNativeAnimeIds = preferNativeAnimeIds,
                     includeTmdbCandidate = true
                 )) {
+                    attemptedEpisodeCandidateKeys.add("${candidate.contentId}|${candidate.preferAnimePath}")
                     addonStreams = requestEpisodeId(
                         contentId = candidate.contentId,
                         label = candidate.label,
@@ -1632,17 +1645,8 @@ class StreamRepository @Inject constructor(
                     if (addonStreams.isNotEmpty()) break
                 }
 
-                if (addonStreams.isEmpty() && !resolveAsAnime && nativeAnimeAddon) {
-                    val retryAnimeQuery = withTimeoutOrNull(3_000L) {
-                        animeMapper.resolveAnimeEpisodeQuery(
-                            tmdbId = tmdbId,
-                            tvdbId = tvdbId,
-                            title = title,
-                            imdbId = imdbId,
-                            season = season,
-                            episode = episode
-                        )
-                    }
+                if (addonStreams.isEmpty() && nativeAnimeAddon) {
+                    val retryAnimeQuery = animeQuery ?: resolveAnimeQuery(NATIVE_ANIME_ID_LOOKUP_TIMEOUT_MS)
                     val retryTmdbEpisodeId = if (tmdbId != null && addonSupportsIdFamily(addon, "tmdb")) {
                         "tmdb:$tmdbId:$season:$episode"
                     } else null
@@ -1650,7 +1654,9 @@ class StreamRepository @Inject constructor(
                         seriesId = seriesId,
                         animeQuery = retryAnimeQuery,
                         tmdbEpisodeId = retryTmdbEpisodeId
-                    )
+                    ).filterNot { candidate ->
+                        attemptedEpisodeCandidateKeys.contains("${candidate.contentId}|${candidate.preferAnimePath}")
+                    }
                     if (retryCandidates.isNotEmpty()) {
                         Log.d(
                             TAG,
@@ -1658,6 +1664,7 @@ class StreamRepository @Inject constructor(
                         )
                     }
                     for (candidate in retryCandidates) {
+                        attemptedEpisodeCandidateKeys.add("${candidate.contentId}|${candidate.preferAnimePath}")
                         addonStreams = requestEpisodeId(
                             contentId = candidate.contentId,
                             label = "retry_${candidate.label}",
