@@ -2633,13 +2633,19 @@ class SettingsViewModel @Inject constructor(
 
             // Pull from cloud with timeout and single retry on failure
             var restoreResult = withTimeoutOrNull(30_000L) {
-                restoreCloudStateToLocalInternal(silent = true)
+                restoreCloudStateToLocalInternal(
+                    silent = true,
+                    pushPendingLocalFirst = false
+                )
             } ?: CloudRestoreResult.FAILED
 
             if (restoreResult == CloudRestoreResult.FAILED) {
                 delay(1200)
                 restoreResult = withTimeoutOrNull(30_000L) {
-                    restoreCloudStateToLocalInternal(silent = true)
+                    restoreCloudStateToLocalInternal(
+                        silent = true,
+                        pushPendingLocalFirst = false
+                    )
                 } ?: CloudRestoreResult.FAILED
             }
 
