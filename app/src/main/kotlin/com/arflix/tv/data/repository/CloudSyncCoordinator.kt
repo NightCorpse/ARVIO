@@ -84,7 +84,7 @@ class CloudSyncCoordinator @Inject constructor(
                     return@launch
                 }
                 Log.i("CloudSyncCoordinator", "Flushing cloud sync for ${invalidation.scope}")
-                runCatching { cloudSyncRepository.pushToCloud() }
+                runCatching { cloudSyncRepository.pushToCloud(force = true) }
                     .onFailure { error ->
                         Log.w("CloudSyncCoordinator", "Cloud push failed after ${invalidation.scope}: ${error.message}")
                         cloudSyncRepository.markLocalStateDirty()

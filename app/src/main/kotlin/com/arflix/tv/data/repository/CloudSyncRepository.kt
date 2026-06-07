@@ -624,13 +624,13 @@ class CloudSyncRepository @Inject constructor(
     //  PUSH LOCAL STATE TO CLOUD
     // ══════════════════════════════════════════════════════════
 
-    suspend fun pushToCloud(): Result<Unit> = cloudSyncMutex.withLock {
-        pushToCloudLocked()
+    suspend fun pushToCloud(force: Boolean = false): Result<Unit> = cloudSyncMutex.withLock {
+        pushToCloudLocked(force = force)
     }
 
-    private suspend fun pushToCloudLocked(): Result<Unit> {
+    private suspend fun pushToCloudLocked(force: Boolean = false): Result<Unit> {
         val now = System.currentTimeMillis()
-        if (pushFailureCount > 0) {
+        if (!force && pushFailureCount > 0) {
             val requiredBackoffMs = (2_000L * (1 shl (pushFailureCount - 1).coerceAtMost(6))).coerceAtMost(300_000L)
             if (now - lastPushAttemptAt < requiredBackoffMs) {
                 AppLogger.breadcrumb(
@@ -669,7 +669,7 @@ class CloudSyncRepository @Inject constructor(
             JSONObject(payload).apply { remove("updatedAt") }.toString().hashCode()
         }.getOrNull()
 
-        if (payloadHash != null && payloadHash == lastPushedPayloadHash && !isPushDirty && pushFailureCount == 0) {
+        if (!force && payloadHash != null && payloadHash == lastPushedPayloadHash && !isPushDirty && pushFailureCount == 0) {
             AppLogger.breadcrumb(
                 tag = "CloudSync",
                 message = "push_skipped_duplicate_hash",

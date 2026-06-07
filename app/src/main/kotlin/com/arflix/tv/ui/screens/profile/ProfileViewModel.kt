@@ -227,7 +227,7 @@ class ProfileViewModel @Inject constructor(
                     profileRepository.getActiveProfileId() == profile.id
                 ) {
                     viewModelScope.launch(Dispatchers.IO) {
-                        runCatching { cloudSyncRepository.pushToCloud() }
+                        runCatching { cloudSyncRepository.pushToCloud(force = true) }
                     }
                 }
 
@@ -353,7 +353,7 @@ class ProfileViewModel @Inject constructor(
             }
             _uiState.value = _uiState.value.copy(showAddDialog = false)
             showToast("Profile created successfully", ToastType.SUCCESS)
-            runCatching { cloudSyncRepository.pushToCloud() }
+            runCatching { cloudSyncRepository.pushToCloud(force = true) }
         }
     }
 
@@ -422,7 +422,7 @@ class ProfileViewModel @Inject constructor(
             profileRepository.updateProfile(updatedProfile)
             _uiState.value = _uiState.value.copy(editingProfile = null)
             showToast("Profile updated", ToastType.SUCCESS)
-            runCatching { cloudSyncRepository.pushToCloud() }
+            runCatching { cloudSyncRepository.pushToCloud(force = true) }
         }
     }
 
@@ -463,7 +463,7 @@ class ProfileViewModel @Inject constructor(
                 profileManager.setCurrentProfileId("default")
                 profileManager.setCurrentProfileName("default")
             }
-            runCatching { cloudSyncRepository.pushToCloud() }
+            runCatching { cloudSyncRepository.pushToCloud(force = true) }
         }
     }
 
@@ -546,7 +546,7 @@ class ProfileViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(editingProfile = updatedProfile)
             hidePinDialog()
             showToast("Profile PIN set successfully", ToastType.SUCCESS)
-            runCatching { cloudSyncRepository.pushToCloud() }
+            runCatching { cloudSyncRepository.pushToCloud(force = true) }
         }
     }
 
@@ -556,7 +556,7 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             profileRepository.updateProfile(updatedProfile)
             _uiState.value = _uiState.value.copy(editingProfile = updatedProfile)
-            runCatching { cloudSyncRepository.pushToCloud() }
+            runCatching { cloudSyncRepository.pushToCloud(force = true) }
         }
     }
 }

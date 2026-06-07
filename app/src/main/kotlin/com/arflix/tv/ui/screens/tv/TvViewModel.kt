@@ -1747,10 +1747,10 @@ class TvViewModel @Inject constructor(
         iptvCloudSyncJob?.cancel()
         iptvCloudSyncJob = viewModelScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(350L)
-            val firstAttempt = runCatching { cloudSyncRepository.pushToCloud() }.getOrNull()
+            val firstAttempt = runCatching { cloudSyncRepository.pushToCloud(force = true) }.getOrNull()
             if (firstAttempt?.isFailure != false) {
                 kotlinx.coroutines.delay(1_200L)
-                runCatching { cloudSyncRepository.pushToCloud() }
+                runCatching { cloudSyncRepository.pushToCloud(force = true) }
             }
         }
     }

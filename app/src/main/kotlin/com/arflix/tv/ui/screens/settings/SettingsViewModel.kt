@@ -2551,16 +2551,20 @@ class SettingsViewModel @Inject constructor(
 
     fun syncLocalStateToCloud(silent: Boolean = false, force: Boolean = false) {
         if (!force && !_uiState.value.isLoggedIn) return
-        if (authRepository.getCurrentUserId().isNullOrBlank()) return
-        cloudSyncRepository.markLocalStateDirty()
         viewModelScope.launch {
+            if (!ensureCloudSyncSession()) return@launch
+            if (force) {
+                cloudSyncRepository.markLocalStateDirtyNow()
+            } else {
+                cloudSyncRepository.markLocalStateDirty()
+            }
             if (!force) {
                 delay(350)
             }
-            var result = cloudSyncRepository.pushToCloud()
+            var result = cloudSyncRepository.pushToCloud(force = force)
             if (result.isFailure) {
                 delay(1200)
-                result = cloudSyncRepository.pushToCloud()
+                result = cloudSyncRepository.pushToCloud(force = force)
             }
 
             if (!silent && result.isSuccess) {
@@ -2605,8 +2609,9 @@ class SettingsViewModel @Inject constructor(
 
             // Push local state first (30s timeout), then pull remote state so this device ends
             // with the server-authoritative snapshot after upload.
+            cloudSyncRepository.markLocalStateDirtyNow()
             var pushResult = withTimeoutOrNull(30_000L) {
-                cloudSyncRepository.pushToCloud()
+                cloudSyncRepository.pushToCloud(force = true)
             }
             if (pushResult == null) {
                 _uiState.value = _uiState.value.copy(
@@ -2619,7 +2624,7 @@ class SettingsViewModel @Inject constructor(
             if (pushResult.isFailure) {
                 delay(1200)
                 pushResult = withTimeoutOrNull(30_000L) {
-                    cloudSyncRepository.pushToCloud()
+                    cloudSyncRepository.pushToCloud(force = true)
                 }
             }
             if (pushResult == null || pushResult.isFailure) {

@@ -817,6 +817,28 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    private suspend fun getCurrentUserIdForSync(): String? {
+        getCurrentUserId()?.takeIf { it.isNotBlank() }?.let { return it }
+
+        val session = ensureValidSession()
+        session?.user?.id?.takeIf { it.isNotBlank() }?.let { userId ->
+            val email = session.user?.email
+                ?: context.authDataStore.data.first()[PrefsKeys.USER_EMAIL]
+                ?: ""
+            val currentProfile = _userProfile.value
+            if (_authState.value !is AuthState.Authenticated) {
+                _authState.value = AuthState.Authenticated(
+                    userId = userId,
+                    email = email,
+                    profile = currentProfile ?: UserProfile(id = userId, email = email)
+                )
+            }
+            return userId
+        }
+
+        return context.authDataStore.data.first()[PrefsKeys.USER_ID]?.takeIf { it.isNotBlank() }
+    }
+
     /**
      * Get Supabase access token for API calls
      */
@@ -1112,7 +1134,7 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun loadAccountSyncPayload(): Result<String?> {
-        val userId = getCurrentUserId() ?: return Result.failure(Exception("Not logged in"))
+        val userId = getCurrentUserIdForSync() ?: return Result.failure(Exception("Not logged in"))
         val accountSyncResult = loadAccountSyncPayloadFromAccountSyncState(userId)
         val userSettingsResult = loadAccountSyncPayloadFromUserSettings()
         val profileResult = loadAccountSyncPayloadFromProfileAddons()
@@ -1128,6 +1150,18 @@ class AuthRepository @Inject constructor(
         if (bestPayload != null) {
             if (bestPayload.source != ACCOUNT_SYNC_SOURCE_PRIMARY) {
                 runCatching { saveAccountSyncPayload(bestPayload.payload) }
+                    .onSuccess { result ->
+                        if (result.isFailure) {
+                            AppLogger.recordException(
+                                throwable = result.exceptionOrNull() ?: IllegalStateException("Canonical account sync save failed"),
+                                context = mapOf(
+                                    "error_area" to "CloudSync",
+                                    "cloud_flow" to "canonicalize_account_sync_payload",
+                                    "source" to bestPayload.source
+                                )
+                            )
+                        }
+                    }
                     .onFailure {
                         AppLogger.recordException(
                             throwable = it,
@@ -1173,7 +1207,7 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun saveAccountSyncPayload(payload: String): Result<Unit> {
-        val userId = getCurrentUserId() ?: return Result.failure(Exception("Not logged in"))
+        val userId = getCurrentUserIdForSync() ?: return Result.failure(Exception("Not logged in"))
         val accountSyncResult = runCatching {
             ensureValidSession()
             supabase.postgrest
@@ -1186,21 +1220,35 @@ class AuthRepository @Inject constructor(
                     )
                 )
         }
-        if (accountSyncResult.isSuccess) return Result.success(Unit)
-
         val userSettingsResult = saveAccountSyncPayloadToUserSettings(userId, payload)
-        if (userSettingsResult.isSuccess) return Result.success(Unit)
+        val profileAddonsResult = saveAccountSyncPayloadToProfileAddons(userId, payload)
 
-        return saveAccountSyncPayloadToProfileAddons(userId, payload)
-            .recoverCatching {
-                throw accountSyncResult.exceptionOrNull()
-                    ?: userSettingsResult.exceptionOrNull()
-                    ?: it
+        if (accountSyncResult.isSuccess) {
+            if (userSettingsResult.isFailure || profileAddonsResult.isFailure) {
+                AppLogger.breadcrumb(
+                    tag = "CloudSync",
+                    message = "primary_saved_mirror_failed user_settings=${userSettingsResult.isFailure} profile_addons=${profileAddonsResult.isFailure}",
+                    severity = "warning"
+                )
             }
+            return Result.success(Unit)
+        }
+        AppLogger.breadcrumb(
+            tag = "CloudSync",
+            message = "primary_save_failed fallback_user_settings=${userSettingsResult.isSuccess} fallback_profile_addons=${profileAddonsResult.isSuccess}",
+            severity = "warning"
+        )
+
+        return Result.failure(
+            accountSyncResult.exceptionOrNull()
+                ?: userSettingsResult.exceptionOrNull()
+                ?: profileAddonsResult.exceptionOrNull()
+                ?: Exception("Cloud sync save failed")
+        )
     }
 
     private suspend fun loadAccountSyncPayloadFromUserSettings(): Result<AccountSyncPayloadCandidate?> {
-        val userId = getCurrentUserId() ?: return Result.failure(Exception("Not logged in"))
+        val userId = getCurrentUserIdForSync() ?: return Result.failure(Exception("Not logged in"))
         return try {
             ensureValidSession()
             val row = supabase.postgrest
@@ -1261,7 +1309,7 @@ class AuthRepository @Inject constructor(
     }
 
     private suspend fun loadAccountSyncPayloadFromProfileAddons(): Result<AccountSyncPayloadCandidate?> {
-        val userId = getCurrentUserId() ?: return Result.failure(Exception("Not logged in"))
+        val userId = getCurrentUserIdForSync() ?: return Result.failure(Exception("Not logged in"))
         return try {
             ensureValidSession()
             val row = supabase.postgrest
@@ -1369,7 +1417,7 @@ class AuthRepository @Inject constructor(
 
     suspend fun mutateAccountSyncPayload(mutator: (JSONObject) -> Unit): Result<Unit> {
         return accountSyncMutationMutex.withLock {
-            val userId = getCurrentUserId() ?: return@withLock Result.failure(Exception("Not logged in"))
+            val userId = getCurrentUserIdForSync() ?: return@withLock Result.failure(Exception("Not logged in"))
             val existingPayload = loadAccountSyncPayload().getOrNull().orEmpty()
             val root = if (existingPayload.isBlank()) {
                 JSONObject()
