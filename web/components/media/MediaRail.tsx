@@ -3,14 +3,15 @@
 import type { Category, MediaItem } from "@/lib/types";
 import { MediaCard } from "./MediaCard";
 
-export function MediaRail({ category, onOpen, onFocus }: {
+export function MediaRail({ category, onOpen, onFocus, posterMode = false }: {
   category: Category;
   onOpen: (item: MediaItem) => void;
   onFocus?: (item: MediaItem) => void;
+  posterMode?: boolean;
 }) {
   if (!category.items.length) return null;
   return (
-    <section className="rail">
+    <section className={`rail ${posterMode ? "is-poster" : ""}`}>
       <div className="rail-head">
         <h3>{category.title}</h3>
         <span>{category.items.length}</span>
@@ -22,6 +23,7 @@ export function MediaRail({ category, onOpen, onFocus }: {
             item={item}
             onOpen={onOpen}
             onFocus={onFocus}
+            posterMode={posterMode}
           />
         ))}
       </div>

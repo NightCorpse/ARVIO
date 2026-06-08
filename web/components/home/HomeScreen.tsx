@@ -9,7 +9,8 @@ import { MediaRail } from "@/components/media/MediaRail";
 import type { Category, MediaItem } from "@/lib/types";
 
 export function HomeScreen() {
-  const { hero, categories, catalogConfigs, homeServerRows, continueWatching, openDetails, setHeroPreview } = useApp();
+  const { hero, categories, catalogConfigs, homeServerRows, continueWatching, openDetails, setHeroPreview, settings } = useApp();
+  const posterMode = settings.cardLayoutMode === "poster";
   const [heroLogo, setHeroLogo] = useState<string | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seededHero = useRef(false);
@@ -68,16 +69,17 @@ export function HomeScreen() {
         </section>
       )}
       {categories.map((category) => (
-        <MediaRail key={category.id} category={category} onOpen={openDetails} onFocus={onCardFocus} />
+        <MediaRail key={category.id} category={category} onOpen={openDetails} onFocus={onCardFocus} posterMode={posterMode} />
       ))}
       {homeServerRows.map((category) => (
-        <MediaRail key={category.id} category={category} onOpen={openDetails} onFocus={onCardFocus} />
+        <MediaRail key={category.id} category={category} onOpen={openDetails} onFocus={onCardFocus} posterMode={posterMode} />
       ))}
       {catalogConfigs.map((catalog, index) => (
         <LazyRail
           key={catalog.id}
           catalog={catalog}
           eager={index < 8}
+          posterMode={posterMode}
           onOpen={openDetails}
           onFocus={onCardFocus}
           onLoaded={seedHeroFromRow}

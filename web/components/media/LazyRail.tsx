@@ -5,9 +5,10 @@ import { useApp } from "@/lib/store";
 import type { CatalogConfig, Category, MediaItem } from "@/lib/types";
 import { MediaRail } from "./MediaRail";
 
-export function LazyRail({ catalog, eager = false, onOpen, onFocus, onLoaded }: {
+export function LazyRail({ catalog, eager = false, posterMode = false, onOpen, onFocus, onLoaded }: {
   catalog: CatalogConfig;
   eager?: boolean;
+  posterMode?: boolean;
   onOpen: (item: MediaItem) => void;
   onFocus?: (item: MediaItem) => void;
   onLoaded?: (category: Category) => void;
@@ -68,12 +69,12 @@ export function LazyRail({ catalog, eager = false, onOpen, onFocus, onLoaded }: 
   }, [catalog.id, eager]);
 
   if (category) {
-    return <MediaRail category={category} onOpen={onOpen} onFocus={onFocus} />;
+    return <MediaRail category={category} onOpen={onOpen} onFocus={onFocus} posterMode={posterMode} />;
   }
   if (done) return null;
 
   return (
-    <section ref={ref} className="rail rail-skeleton" aria-hidden>
+    <section ref={ref} className={`rail rail-skeleton ${posterMode ? "is-poster" : ""}`} aria-hidden>
       <div className="rail-head">
         <h3>{catalog.name}</h3>
       </div>

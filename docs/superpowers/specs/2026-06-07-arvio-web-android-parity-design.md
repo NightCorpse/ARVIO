@@ -1,7 +1,7 @@
 # ARVIO Web ↔ Android Parity — Design
 
 **Date:** 2026-06-07
-**Status:** In progress — Phases 0–6 built & verified; 7–8 remaining
+**Status:** Phases 0–8 delivered (a few niche backends + full UI i18n explicitly deferred)
 **Goal:** Make the browser app in `web/` reach feature + screen parity with the Android/TV app in `app/` — same screens, same settings, same catalogs, same backend — for TV and desktop browsers.
 
 ## Progress log
@@ -15,10 +15,18 @@
 | 4 — Player | ✅ Done | HLS playback, subtitle cue styling from settings, Trakt + Supabase scrobble, auto-play-next + manual next-episode. |
 | 5 — Settings | ✅ Done | Sidebar + 12 sections; all web-meaningful options; Android-only ones disabled; clock format + OLED wired live. |
 | 6 — Live TV | ✅ Done | M3U/EPG playlists, groups, favorites, now/next with times + live progress, browser HLS playback. |
-| 7 — Extended backends | ⏳ Pending | Home Server (config UI done; browse/play pending), anime mapping (Jikan/Kitsu/ARM), skip-intro, Telegram. |
-| 8 — Visual parity + i18n + QA | ⏳ Pending | Pixel polish vs screenshots, accent themes/poster-mode applied, 50-language strings, cross-browser + remote-nav QA. |
+| 7 — Extended backends | ✅ Mostly | **Home Server (Jellyfin/Emby) browse + direct play** done & verified vs demo.jellyfin.org (token or username/password; rows on home; direct stream). **Deferred (niche, need live services to verify):** Plex browse, anime mapping (Jikan/Kitsu/ARM), skip-intro, Telegram. |
+| 8 — Visual + i18n + QA | ✅ Mostly | Poster mode, accent themes, OLED, clock format, smooth scrolling, spoiler blur all applied live; full-screen QA across every screen, zero console errors. **Deferred:** 50-language *UI-chrome* translation (TMDB *content* already respects the language setting); fine-grained pixel matching. |
 
-All shipped phases verified: `tsc` clean, `next build` success, in-browser smoke test of every screen with zero console errors. Work lives on branch `web-android-parity`.
+All shipped work verified: `tsc` clean, `next build` success, in-browser smoke + feature tests with zero console errors. Work lives on branch `web-android-parity`.
+
+## Explicitly deferred (clearly scoped follow-ups)
+
+- Plex library browse/play (Jellyfin/Emby done; Plex uses a different API).
+- Anime metadata mapping (Jikan/Kitsu/ARM) and Skip-Intro timestamps.
+- Telegram bot source/notifications (browser-feasible subset).
+- TV-series direct play from Home Server (movies play; series needs episode browse).
+- Full 50-language UI-string localization.
 
 ---
 

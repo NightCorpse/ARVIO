@@ -1834,3 +1834,42 @@ input:focus {
   margin: 2px 0;
 }
 .epg-progress > span { display: block; height: 100%; background: var(--green); }
+
+/* ============================================================
+   Phase 8 — poster mode, accent themes, spoiler blur
+   ============================================================ */
+
+/* Poster (portrait) card layout */
+.rail.is-poster .rail-strip {
+  grid-auto-columns: clamp(150px, 12vw, 210px);
+}
+.media-card.is-poster {
+  width: clamp(150px, 12vw, 210px);
+}
+.media-card.is-poster .poster {
+  aspect-ratio: 2 / 3;
+}
+
+/* Accent theme — applied via --accent on .app-shell */
+.app-shell .nav-item.is-active {
+  background: color-mix(in srgb, var(--accent, #ededed) 24%, transparent);
+}
+.app-shell .media-card:hover,
+.app-shell .media-card:focus-visible,
+.app-shell .primary:hover,
+.app-shell .primary:focus-visible,
+.app-shell .source-row:hover,
+.app-shell .source-row:focus-visible {
+  box-shadow: 0 0 0 4px var(--accent, #fff), var(--shadow);
+}
+
+/* Spoiler blur — hide episode/review text until hover */
+.spoiler-blur .episode-info p,
+.spoiler-blur .review-card p {
+  filter: blur(5px);
+  transition: filter 160ms ease;
+}
+.spoiler-blur .episode-row:hover .episode-info p,
+.spoiler-blur .review-card:hover p {
+  filter: none;
+}
