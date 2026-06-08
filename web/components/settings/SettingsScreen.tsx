@@ -265,13 +265,15 @@ function HomeServerSection() {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
 
   const servers = settings.homeServers ?? [];
   const update = (next: HomeServerConfig[]) => updateSettings({ homeServers: next });
 
   return (
     <Panel title="Home Server">
-      <p className="empty">Connect Plex / Jellyfin / Emby. Library browsing plays through the browser when the server exposes direct/HLS streams.</p>
+      <p className="empty">Connect Jellyfin / Emby with an API token, or a username + password. Movies play directly in the browser. (Plex accepted; browse coming soon.)</p>
       <div className="inline-form">
         <select value={type} onChange={(e) => setType(e.target.value as HomeServerConfig["type"])}>
           <option value="jellyfin">Jellyfin</option>
@@ -279,12 +281,14 @@ function HomeServerSection() {
           <option value="plex">Plex</option>
         </select>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" />
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://server:8096" />
-        <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="API token" />
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://server:8096" />
+        <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="API token (optional)" />
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username (optional)" />
+        <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" />
         <button className="primary" onClick={() => {
           if (!url.trim()) return;
-          update([{ id: crypto.randomUUID(), type, name: name || type, url: url.trim(), token: token.trim(), enabled: true }, ...servers]);
-          setName(""); setUrl(""); setToken("");
+          update([{ id: crypto.randomUUID(), type, name: name || type, url: url.trim(), token: token.trim(), username: username.trim() || undefined, password: password || undefined, enabled: true }, ...servers]);
+          setName(""); setUrl(""); setToken(""); setUsername(""); setPassword("");
         }}><Plus size={18} /> Add</button>
       </div>
       <div className="settings-list">

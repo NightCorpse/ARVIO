@@ -17,7 +17,7 @@ export function MediaCard({ item, onOpen, onFocus }: {
   // Rails load lazily, so a card only mounts when its row is near the viewport —
   // fetch the title-treatment logo on mount (getLogoUrl is cached + persisted).
   useEffect(() => {
-    if (item.id <= 0) return undefined;
+    if (item.id <= 0 || item.isHomeServer) return undefined;
     let active = true;
     void getLogoUrl({ mediaType: item.mediaType, id: item.id }).then((url) => {
       if (active) setLogo(url);

@@ -5,6 +5,7 @@ import { getStreams, installAddon as installAddonManifest, loadLocalAddons, save
 import { AuthClient } from "./auth";
 import { defaultCatalogs, mergeCatalogs } from "./catalogs";
 import { getContinueWatching, pullCloudPayload, pullCloudProfiles, saveCloudAddons, saveCloudProfiles, saveCloudSettings } from "./cloud";
+import { loadHomeServerRows } from "./homeserver";
 import { loadIptvSnapshot, loadPlaylists, savePlaylists } from "./iptv";
 import { dedupeMedia, historyToItem, hydrateTraktItems, traktItemToMedia, traktPlaybackToMedia } from "./mappers";
 import { loadStored, saveStored } from "./storage";
@@ -132,6 +133,7 @@ export interface AppStore {
   categories: Category[];
   catalogConfigs: CatalogConfig[];
   loadCatalogRow: (catalog: CatalogConfig) => Promise<Category | null>;
+  homeServerRows: Category[];
   continueWatching: MediaItem[];
   watchlist: MediaItem[];
   hero: MediaItem | null;
@@ -186,6 +188,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [section, setSection] = useState<NavSection>("home");
   const [categories, setCategories] = useState<Category[]>([]);
   const [catalogConfigs, setCatalogConfigs] = useState<CatalogConfig[]>([]);
+  const [homeServerRows, setHomeServerRows] = useState<Category[]>([]);
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
   const [watchlist, setWatchlist] = useState<MediaItem[]>([]);
   const [selected, setSelected] = useState<MediaItem | null>(null);
@@ -265,6 +268,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const effectiveCatalogs = mergeCatalogs(settings.catalogs, settings.hiddenCatalogIds);
       setCatalogConfigs(effectiveCatalogs.filter((catalog) => catalog.enabled));
 
+      void loadHomeServerRows(settings.homeServers).then(setHomeServerRows).catch(() => setHomeServerRows([]));
+
       const [historyRows, traktRows, playbackRows, loadedIptv] = await Promise.all([
         authClient.session ? getContinueWatching(authClient).catch(() => []) : Promise.resolve([]),
         traktClient.isConnected ? traktClient.watchlist().catch(() => []) : Promise.resolve([]),
@@ -300,7 +305,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     settings.favoriteChannelIds,
     settings.favoriteGroupIds,
     settings.hiddenGroupIds,
-    settings.groupOrder
+    settings.groupOrder,
+    settings.homeServers
   ]);
 
   useEffect(() => {
@@ -353,8 +359,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openDetails = useCallback(async (item: MediaItem) => {
-    setBusy("Opening details");
     setSelectedEpisode(null);
+    // Home-server items carry their own metadata + a direct stream URL — no TMDB.
+    if (item.isHomeServer) {
+      setSelected(item);
+      setStreams(item.homeServerUrl
+        ? [{ source: item.title, addonName: "Home Server", quality: "Direct", size: "", url: item.homeServerUrl }]
+        : []);
+      setBusy("");
+      return;
+    }
+    setBusy("Opening details");
     setStreams([]);
     const detailed = await getDetails(item).catch(() => item);
     setSelected(detailed);
@@ -527,6 +542,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     categories,
     catalogConfigs,
     loadCatalogRow,
+    homeServerRows,
     continueWatching,
     watchlist,
     hero,
@@ -569,7 +585,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }), [
     view, profiles, activeProfile, avatarImages, manageMode,
     selectProfile, createProfile, updateProfileAction, deleteProfileAction, switchProfile, goToLogin, backToProfiles,
-    section, categories, catalogConfigs, loadCatalogRow, continueWatching, watchlist, hero, heroPreview, selected, streams, selectedEpisode, loadEpisodeStreams, advanceEpisode, activeStream, activeChannel,
+    section, categories, catalogConfigs, loadCatalogRow, homeServerRows, continueWatching, watchlist, hero, heroPreview, selected, streams, selectedEpisode, loadEpisodeStreams, advanceEpisode, activeStream, activeChannel,
     addons, iptvSnapshot, query, results, settings, auth, traktConnected, deviceCode, busy, toast,
     updateSettings, refreshData, openDetails, closeDetails, playStream, playChannel, closePlayer,
     installAddon, removeAddon, setAddonsState, signIn, signOut, beginTrakt, pollTrakt, disconnectTrakt

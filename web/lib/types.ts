@@ -25,6 +25,9 @@ export interface MediaItem {
   cast?: PersonCredit[];
   seasons?: SeasonSummary[];
   related?: MediaItem[];
+  // Home server (Plex/Jellyfin/Emby) direct playback
+  isHomeServer?: boolean;
+  homeServerUrl?: string | null;
 }
 
 export interface NextEpisode {
@@ -279,6 +282,7 @@ export interface HomeServerConfig {
   url: string;
   token?: string;
   username?: string;
+  password?: string;
   enabled: boolean;
 }
 
