@@ -729,13 +729,64 @@ fun LiveTvScreen(
     // recents remain ordered dynamic lists, but they are simple id lookups.
     val filteredChannelsState = remember { mutableStateOf<List<EnrichedChannel>>(emptyList()) }
     val recentsFilterKey = if (selectedCategoryId == "recent") recents.value else Unit
-    LaunchedEffect(visibleEnrichedState.value.index, selectedCategoryId, favSet, recentsFilterKey) {
-        val result = withContext(Dispatchers.Default) {
+    LaunchedEffect(
+        visibleEnrichedState.value.index,
+        visibleEnrichedState.value.tree,
+        selectedCategoryId,
+        favSet,
+        recentsFilterKey,
+        pagedLoadedLimit,
+    ) {
+        val tree = visibleEnrichedState.value.tree
+        val categoryCount = tree.countForCategory(selectedCategoryId) ?: 0
+        var result = withContext(Dispatchers.Default) {
             visibleEnrichedState.value.index.channelsFor(
                 categoryId = selectedCategoryId,
                 favorites = state.snapshot.favoriteChannels,
                 recents = recents.value,
             )
+        }
+        if (result.isEmpty() && categoryCount > 0 && selectedCategoryId.startsWith("grp:") &&
+            viewModel.iptvRepository.pagedChannelsReady()
+        ) {
+            val category = tree.byId(selectedCategoryId)
+            val resolvedGroup = if (category?.playlistId != null && category.playlistGroupName != null) {
+                category.playlistId to category.playlistGroupName
+            } else {
+                lastKnownPlaylistGroupCounts
+                    .firstOrNull { (playlistId, groupTitle, _) ->
+                        playlistGroupCategoryId(playlistId, groupTitle) == selectedCategoryId
+                    }
+                    ?.let { (playlistId, groupTitle, _) -> playlistId to groupTitle }
+            }
+            val directChannels = withContext(Dispatchers.IO) {
+                val playlistId = resolvedGroup?.first
+                val groupTitle = resolvedGroup?.second
+                if (playlistId != null && groupTitle != null) {
+                    val exact = viewModel.iptvRepository
+                        .pagedChannelWindow(playlistId, groupTitle, 0, pagedLoadedLimit)
+                    if (exact.isNotEmpty()) exact
+                    else viewModel.iptvRepository.pagedChannelWindow(null, groupTitle, 0, pagedLoadedLimit)
+                } else {
+                    emptyList()
+                }
+            }
+            if (directChannels.isNotEmpty()) {
+                System.err.println(
+                    "[IPTV-PagedWindow] recovered empty filtered category=$selectedCategoryId " +
+                        "rows=${directChannels.size}/$categoryCount"
+                )
+                result = withContext(Dispatchers.Default) {
+                    directChannels.mapIndexed { index, channel -> channel.enrichForFastStartup(100 + index) }
+                }
+            }
+        }
+        if (result.isEmpty() && categoryCount > 0 && filteredChannelsState.value.isNotEmpty()) {
+            System.err.println(
+                "[IPTV-PagedWindow] keeping previous filtered rows while category window rebuilds " +
+                    "category=$selectedCategoryId count=$categoryCount"
+            )
+            return@LaunchedEffect
         }
         filteredChannelsState.value = result
     }
