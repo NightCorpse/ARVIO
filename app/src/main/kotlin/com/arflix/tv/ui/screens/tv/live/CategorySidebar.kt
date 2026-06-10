@@ -720,25 +720,12 @@ private fun CategoryContextMenu(
 ) {
     if (actions.isEmpty()) return
 
-    var ignoreSelectUntilRelease by remember { mutableStateOf(true) }
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        repeat(4) {
-            if (runCatching { focusRequester.requestFocus() }.isSuccess) return@LaunchedEffect
-            delay(40L)
-        }
-    }
-    LaunchedEffect(Unit) {
-        delay(900L)
-        ignoreSelectUntilRelease = false
-    }
-
     Popup(
         alignment = Alignment.CenterEnd,
         onDismissRequest = onDismiss,
         properties = PopupProperties(
-            focusable = true,
-            dismissOnBackPress = true,
+            focusable = false,
+            dismissOnBackPress = false,
             dismissOnClickOutside = false,
         ),
     ) {
@@ -747,40 +734,6 @@ private fun CategoryContextMenu(
                 .width(184.dp)
                 .background(LiveColors.PanelRaised, RoundedCornerShape(10.dp))
                 .border(1.dp, LiveColors.FocusRing.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
-                .focusRequester(focusRequester)
-                .focusable()
-                .onPreviewKeyEvent { event ->
-                    val isSelect = event.key == Key.DirectionCenter || event.key == Key.Enter
-                    when {
-                        event.type == KeyEventType.KeyUp && isSelect && ignoreSelectUntilRelease -> {
-                            ignoreSelectUntilRelease = false
-                            true
-                        }
-                        event.type != KeyEventType.KeyDown -> false
-                        isSelect && ignoreSelectUntilRelease -> true
-                        else -> {
-                            when (event.key) {
-                            Key.DirectionUp -> {
-                                onFocusedIndexChange((focusedIndex - 1).coerceAtLeast(0))
-                                true
-                            }
-                            Key.DirectionDown -> {
-                                onFocusedIndexChange((focusedIndex + 1).coerceAtMost(actions.lastIndex))
-                                true
-                            }
-                            Key.DirectionCenter, Key.Enter -> {
-                                onAction(focusedIndex)
-                                true
-                            }
-                            Key.DirectionLeft, Key.Back, Key.Escape -> {
-                                onDismiss()
-                                true
-                            }
-                            else -> false
-                            }
-                        }
-                    }
-                }
                 .padding(4.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
