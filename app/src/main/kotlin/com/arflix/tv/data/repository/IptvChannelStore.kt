@@ -203,26 +203,32 @@ internal class IptvChannelStore(context: Context) : SQLiteOpenHelper(
         limit: Int
     ): List<IptvChannel> {
         if (sourceKey.isBlank()) return emptyList()
-        val byGroup = !groupTitle.isNullOrEmpty()
-        val byPlaylist = !playlistId.isNullOrBlank()
-        val sql = buildString {
-            append("SELECT * FROM channels WHERE source_key = ?")
-            if (byPlaylist) append(" AND id LIKE ?")
-            if (byGroup) append(" AND group_title = ?")
-            append(" ORDER BY ord")
-            if (limit >= 0) append(" LIMIT ").append(limit).append(" OFFSET ").append(offset.coerceAtLeast(0))
+        fun query(normalizedGroup: Boolean): List<IptvChannel> {
+            val byGroup = !groupTitle.isNullOrEmpty()
+            val byPlaylist = !playlistId.isNullOrBlank()
+            val sql = buildString {
+                append("SELECT * FROM channels WHERE source_key = ?")
+                if (byPlaylist) append(" AND id LIKE ?")
+                if (byGroup) {
+                    if (normalizedGroup) append(" AND trim(group_title) = ?") else append(" AND group_title = ?")
+                }
+                append(" ORDER BY ord")
+                if (limit >= 0) append(" LIMIT ").append(limit).append(" OFFSET ").append(offset.coerceAtLeast(0))
+            }
+            val args = buildList {
+                add(sourceKey)
+                if (byPlaylist) add("${playlistId}:%")
+                if (byGroup) add(if (normalizedGroup) groupTitle!!.trim() else groupTitle!!)
+            }.toTypedArray()
+            return readableDatabase.rawQuery(sql, args).use { cursor ->
+                val out = ArrayList<IptvChannel>(if (limit in 1..100_000) limit else cursor.count)
+                val cols = ColumnIndices(cursor)
+                while (cursor.moveToNext()) out.add(readChannel(cursor, cols))
+                out
+            }
         }
-        val args = buildList {
-            add(sourceKey)
-            if (byPlaylist) add("${playlistId}:%")
-            if (byGroup) add(groupTitle!!)
-        }.toTypedArray()
-        return readableDatabase.rawQuery(sql, args).use { cursor ->
-            val out = ArrayList<IptvChannel>(if (limit in 1..100_000) limit else cursor.count)
-            val cols = ColumnIndices(cursor)
-            while (cursor.moveToNext()) out.add(readChannel(cursor, cols))
-            out
-        }
+        val exact = query(normalizedGroup = false)
+        return if (exact.isNotEmpty() || groupTitle.isNullOrBlank()) exact else query(normalizedGroup = true)
     }
 
     fun countForGroup(sourceKey: String, groupTitle: String?): Int {

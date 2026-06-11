@@ -93,6 +93,7 @@ fun EpgGrid(
     focusSelectedChannelSignal: Int,
     focusEpgSignal: Int = 0,
     focusMode: EpgGridFocusMode = EpgGridFocusMode.ChannelList,
+    scrollResetKey: String = "",
     onChannelSelect: (EnrichedChannel, IptvProgram?) -> Unit,
     onProgramSelect: (EnrichedChannel, IptvProgram?) -> Unit = onChannelSelect,
     onChannelFocused: (EnrichedChannel) -> Unit = {},
@@ -168,6 +169,16 @@ fun EpgGrid(
     var didPositionInitialSelection by remember(channels) { mutableStateOf(false) }
     var activeChannelFocusId by remember(channels) { mutableStateOf(selectedChannelId) }
     var pendingChannelFocusId by remember(channels) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(scrollResetKey, channelWindowIdentity) {
+        if (channels.isEmpty()) return@LaunchedEffect
+        channelListState.scrollToItem(0)
+        activeChannelFocusId = selectedChannelId
+            ?.takeIf { it in channelIndexById }
+            ?: channels.firstOrNull()?.id
+        pendingChannelFocusId = null
+        didPositionInitialSelection = true
+    }
 
     val scope = rememberCoroutineScope()
     fun requestProgramFocus(rowIdx: Int, targetIdx: Int): Boolean {

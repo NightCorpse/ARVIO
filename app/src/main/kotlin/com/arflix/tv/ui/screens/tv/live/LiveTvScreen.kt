@@ -492,7 +492,20 @@ fun LiveTvScreen(
             if (freshGroupCounts.isEmpty() && groupCounts.isNotEmpty()) {
                 System.err.println("[IPTV-PagedUI] using cached group counts while paged store refreshes")
             }
-            val category = enrichedState.value.tree.byId(selectedCategoryId)
+            fun resolvePagedGroup(tree: LiveCategoryTree): Pair<String, String>? {
+                val fromCounts = lastKnownPlaylistGroupCounts
+                    .firstOrNull { (playlistId, groupTitle, _) ->
+                        playlistGroupCategoryId(playlistId, groupTitle) == selectedCategoryId
+                    }
+                    ?.let { (playlistId, groupTitle, _) -> playlistId to groupTitle }
+                if (fromCounts != null) return fromCounts
+                val category = tree.byId(selectedCategoryId)
+                return if (category?.playlistId != null && category.playlistGroupName != null) {
+                    category.playlistId to category.playlistGroupName
+                } else {
+                    null
+                }
+            }
             val previousFavoriteRows = if (selectedCategoryId == "fav") {
                 enrichedState.value.index.channelsFor("fav", favSet, recents.value)
             } else {
@@ -517,6 +530,32 @@ fun LiveTvScreen(
                     )
                 }
                 val pageLimit = pagedLoadedLimit.coerceAtLeast(GuideMaxWindowRows)
+                fun scanCategoryWindow(categoryId: String, targetGroupTitle: String?): List<IptvChannel> {
+                    if (!categoryId.startsWith("grp:")) return emptyList()
+                    val targetGroupKey = looseIptvGroupKey(targetGroupTitle)
+                    val targetCompactGroupKey = compactIptvGroupKey(targetGroupTitle)
+                    val out = ArrayList<IptvChannel>(pageLimit)
+                    var offset = 0
+                    val chunkSize = 1_000
+                    while (out.size < pageLimit && offset < pagedTotal) {
+                        val chunk = viewModel.iptvRepository.pagedChannelWindow(null, null, offset, chunkSize)
+                        if (chunk.isEmpty()) break
+                        chunk.forEach { channel ->
+                            val rawPlaylistId = channel.id.substringBefore(':')
+                            val categoryMatches = playlistGroupCategoryId(rawPlaylistId, channel.group) == categoryId
+                            val looseGroupMatches = targetGroupKey.isNotBlank() &&
+                                looseIptvGroupKey(channel.group) == targetGroupKey
+                            val compactGroupMatches = targetCompactGroupKey.isNotBlank() &&
+                                compactIptvGroupKey(channel.group) == targetCompactGroupKey
+                            if (categoryMatches || looseGroupMatches || compactGroupMatches) {
+                                out += channel
+                                if (out.size >= pageLimit) return out
+                            }
+                        }
+                        offset += chunk.size
+                    }
+                    return out
+                }
                 fun mergePriorityWithWindow(baseWindow: List<IptvChannel>): List<IptvChannel> {
                     if (favoriteChannels.isEmpty()) return baseWindow.take(pageLimit)
                     val seen = LinkedHashSet<String>(pageLimit)
@@ -536,15 +575,7 @@ fun LiveTvScreen(
                         viewModel.iptvRepository.pagedChannelWindow(null, null, 0, pageLimit)
                     )
                     else -> {
-                        val resolvedGroup = if (category?.playlistId != null && category.playlistGroupName != null) {
-                            category.playlistId to category.playlistGroupName
-                        } else {
-                            groupCounts
-                                .firstOrNull { (playlistId, groupTitle, _) ->
-                                    playlistGroupCategoryId(playlistId, groupTitle) == selectedCategoryId
-                                }
-                                ?.let { (playlistId, groupTitle, _) -> playlistId to groupTitle }
-                        }
+                        val resolvedGroup = resolvePagedGroup(enrichedState.value.tree)
                         val playlistId = resolvedGroup?.first
                         val groupTitle = resolvedGroup?.second
                         System.err.println(
@@ -565,7 +596,18 @@ fun LiveTvScreen(
                                         "category=$selectedCategoryId group=$groupTitle rows=${fallbackWindow.size}"
                                 )
                             }
-                            mergePriorityWithWindow(fallbackWindow)
+                            val recoveredWindow = if (fallbackWindow.isEmpty()) {
+                                scanCategoryWindow(selectedCategoryId, groupTitle)
+                            } else {
+                                fallbackWindow
+                            }
+                            if (fallbackWindow.isEmpty() && recoveredWindow.isNotEmpty()) {
+                                System.err.println(
+                                    "[IPTV-PagedWindow] recovered category by scan " +
+                                        "category=$selectedCategoryId rows=${recoveredWindow.size}"
+                                )
+                            }
+                            mergePriorityWithWindow(recoveredWindow)
                         } else {
                             mergePriorityWithWindow(
                                 viewModel.iptvRepository.pagedChannelWindow(null, null, 0, pageLimit)
@@ -728,6 +770,7 @@ fun LiveTvScreen(
     // Category switches are served from prebuilt buckets. Favorites and
     // recents remain ordered dynamic lists, but they are simple id lookups.
     val filteredChannelsState = remember { mutableStateOf<List<EnrichedChannel>>(emptyList()) }
+    var filteredChannelsCategoryKey by remember { mutableStateOf<String?>(null) }
     val recentsFilterKey = if (selectedCategoryId == "recent") recents.value else Unit
     LaunchedEffect(
         visibleEnrichedState.value.index,
@@ -749,26 +792,54 @@ fun LiveTvScreen(
         if (result.isEmpty() && categoryCount > 0 && selectedCategoryId.startsWith("grp:") &&
             viewModel.iptvRepository.pagedChannelsReady()
         ) {
-            val category = tree.byId(selectedCategoryId)
-            val resolvedGroup = if (category?.playlistId != null && category.playlistGroupName != null) {
-                category.playlistId to category.playlistGroupName
-            } else {
-                lastKnownPlaylistGroupCounts
-                    .firstOrNull { (playlistId, groupTitle, _) ->
-                        playlistGroupCategoryId(playlistId, groupTitle) == selectedCategoryId
-                    }
-                    ?.let { (playlistId, groupTitle, _) -> playlistId to groupTitle }
-            }
+            val resolvedGroup = lastKnownPlaylistGroupCounts
+                .firstOrNull { (playlistId, groupTitle, _) ->
+                    playlistGroupCategoryId(playlistId, groupTitle) == selectedCategoryId
+                }
+                ?.let { (playlistId, groupTitle, _) -> playlistId to groupTitle }
+                ?: tree.byId(selectedCategoryId)
+                    ?.takeIf { it.playlistId != null && it.playlistGroupName != null }
+                    ?.let { it.playlistId!! to it.playlistGroupName!! }
             val directChannels = withContext(Dispatchers.IO) {
                 val playlistId = resolvedGroup?.first
                 val groupTitle = resolvedGroup?.second
+                fun scanCategoryWindow(targetGroupTitle: String?): List<IptvChannel> {
+                    if (!selectedCategoryId.startsWith("grp:")) return emptyList()
+                    val targetGroupKey = looseIptvGroupKey(targetGroupTitle)
+                    val targetCompactGroupKey = compactIptvGroupKey(targetGroupTitle)
+                    val out = ArrayList<IptvChannel>(pagedLoadedLimit)
+                    var offset = 0
+                    val chunkSize = 1_000
+                    while (out.size < pagedLoadedLimit) {
+                        val chunk = viewModel.iptvRepository.pagedChannelWindow(null, null, offset, chunkSize)
+                        if (chunk.isEmpty()) break
+                        chunk.forEach { channel ->
+                            val rawPlaylistId = channel.id.substringBefore(':')
+                            val categoryMatches = playlistGroupCategoryId(rawPlaylistId, channel.group) == selectedCategoryId
+                            val looseGroupMatches = targetGroupKey.isNotBlank() &&
+                                looseIptvGroupKey(channel.group) == targetGroupKey
+                            val compactGroupMatches = targetCompactGroupKey.isNotBlank() &&
+                                compactIptvGroupKey(channel.group) == targetCompactGroupKey
+                            if (categoryMatches || looseGroupMatches || compactGroupMatches) {
+                                out += channel
+                                if (out.size >= pagedLoadedLimit) return out
+                            }
+                        }
+                        offset += chunk.size
+                    }
+                    return out
+                }
                 if (playlistId != null && groupTitle != null) {
                     val exact = viewModel.iptvRepository
                         .pagedChannelWindow(playlistId, groupTitle, 0, pagedLoadedLimit)
-                    if (exact.isNotEmpty()) exact
-                    else viewModel.iptvRepository.pagedChannelWindow(null, groupTitle, 0, pagedLoadedLimit)
+                    if (exact.isNotEmpty()) {
+                        exact
+                    } else {
+                        val fallback = viewModel.iptvRepository.pagedChannelWindow(null, groupTitle, 0, pagedLoadedLimit)
+                        if (fallback.isNotEmpty()) fallback else scanCategoryWindow(groupTitle)
+                    }
                 } else {
-                    emptyList()
+                    scanCategoryWindow(tree.byId(selectedCategoryId)?.playlistGroupName)
                 }
             }
             if (directChannels.isNotEmpty()) {
@@ -781,13 +852,18 @@ fun LiveTvScreen(
                 }
             }
         }
-        if (result.isEmpty() && categoryCount > 0 && filteredChannelsState.value.isNotEmpty()) {
+        if (result.isEmpty() &&
+            categoryCount > 0 &&
+            filteredChannelsCategoryKey == selectedCategoryId &&
+            filteredChannelsState.value.isNotEmpty()
+        ) {
             System.err.println(
                 "[IPTV-PagedWindow] keeping previous filtered rows while category window rebuilds " +
                     "category=$selectedCategoryId count=$categoryCount"
             )
             return@LaunchedEffect
         }
+        filteredChannelsCategoryKey = selectedCategoryId
         filteredChannelsState.value = result
     }
     val visibleChannels = visibleEnrichedState.value.all
@@ -902,10 +978,20 @@ fun LiveTvScreen(
     val selectedDisplayChannelId = remember(focusedChannelId, playingChannelId, visibleChannelsById, variantGroups) {
         displayChannelIdFor(focusedChannelId ?: playingChannelId, visibleChannelsById, variantGroups)
     }
-    val playingChannel = remember(playingChannelId, visibleEnrichedState.value, filteredChannels) {
+    val indexedPlayingChannel = remember(playingChannelId, visibleEnrichedState.value, filteredChannels) {
         playingChannelId?.let { visibleEnrichedState.value.index.byId[it] }
             ?: filteredChannels.firstOrNull { it.id == playingChannelId }
     }
+    var retainedPlayingChannel by remember { mutableStateOf<EnrichedChannel?>(null) }
+    LaunchedEffect(playingChannelId, indexedPlayingChannel) {
+        retainedPlayingChannel = when {
+            playingChannelId == null -> null
+            indexedPlayingChannel != null -> indexedPlayingChannel
+            retainedPlayingChannel?.id == playingChannelId -> retainedPlayingChannel
+            else -> retainedPlayingChannel
+        }
+    }
+    val playingChannel = indexedPlayingChannel ?: retainedPlayingChannel?.takeIf { it.id == playingChannelId }
     val catchupUrlAnchorOffsetMs = remember(playingChannel?.source, catchupPlaybackOffsetMs) {
         playingChannel?.source?.catchupUrlAnchorOffset(catchupPlaybackOffsetMs) ?: 0L
     }
@@ -958,6 +1044,11 @@ fun LiveTvScreen(
         ).joinToString("|")
     }
     var guideScopeKey by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(selectedProviderId, selectedCategoryId) {
+        guideScopeKey = ""
+        guideWindowStart = 0
+        guideWindowEnd = GuideInitialWindowRows
+    }
     LaunchedEffect(selectedProviderId, selectedCategoryId, filteredChannelsWindowKey) {
         if (filteredChannels.isEmpty()) return@LaunchedEffect
         val nextScopeKey = "$selectedProviderId|$selectedCategoryId"
@@ -987,7 +1078,11 @@ fun LiveTvScreen(
             setGuideWindow(guideWindowAround(index, filteredChannels.size))
         }
     }
-    val normalizedGuideStart = guideWindowStart.coerceIn(0, filteredChannels.size)
+    val normalizedGuideStart = if (filteredChannels.isNotEmpty() && guideWindowStart >= filteredChannels.size) {
+        0
+    } else {
+        guideWindowStart.coerceIn(0, filteredChannels.size)
+    }
     val normalizedGuideEnd = guideWindowEnd.coerceIn(normalizedGuideStart, filteredChannels.size)
     val guideChannels = remember(filteredChannels, normalizedGuideStart, normalizedGuideEnd) {
         if (normalizedGuideStart >= normalizedGuideEnd) emptyList() else filteredChannels.subList(normalizedGuideStart, normalizedGuideEnd)
@@ -1240,7 +1335,7 @@ fun LiveTvScreen(
                 startupChannelApplied = true
                 System.err.println("[EPG-Startup] channel=$startupChannelId focus=$displayId")
             }
-        } else if ((!playingVisible || playingChannelId == null) && filteredChannels.isNotEmpty() && startupStateReady && !isGuideUserNavigating()) {
+        } else if (playingChannelId == null && filteredChannels.isNotEmpty() && startupStateReady && !isGuideUserNavigating()) {
             val fallbackChannelId = chooseStartupChannelId(
                 filteredChannels = filteredChannels,
                 filteredChannelIds = filteredChannelIndexById.keys,
@@ -2163,14 +2258,6 @@ fun LiveTvScreen(
                         onMoveDown = { focusPlaylistSearch() },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    EpgStatusStrip(
-                        isLoading = guideLoadingInScope,
-                        warning = state.snapshot.epgWarning,
-                        matchedCount = matchedGuideCount,
-                        totalChannels = guideStatusIds.size,
-                        hasGuideSource = state.hasPotentialGuideSource,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                     MiniPlayerRow(
                         exoPlayer = exoPlayer,
                         channel = playingChannel,
@@ -2212,6 +2299,7 @@ fun LiveTvScreen(
                         } else {
                             EpgGridFocusMode.ChannelList
                         },
+                        scrollResetKey = "$selectedProviderId|$selectedCategoryId|$filteredChannelsWindowKey|$normalizedGuideStart",
                         compact = true,
                         gridFocused = focusZone == LiveTvFocusZone.EPG,
                         onChannelSelect = { channel, _ ->
@@ -2314,14 +2402,6 @@ fun LiveTvScreen(
                         onMoveDown = { focusPlaylistSearch() },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    EpgStatusStrip(
-                        isLoading = guideLoadingInScope,
-                        warning = state.snapshot.epgWarning,
-                        matchedCount = matchedGuideCount,
-                        totalChannels = guideStatusIds.size,
-                        hasGuideSource = state.hasPotentialGuideSource,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                     MiniPlayerRow(
                         exoPlayer = exoPlayer,
                         channel = playingChannel,
@@ -2353,6 +2433,7 @@ fun LiveTvScreen(
                         } else {
                             EpgGridFocusMode.ChannelList
                         },
+                        scrollResetKey = "$selectedProviderId|$selectedCategoryId|$filteredChannelsWindowKey|$normalizedGuideStart",
                         compact = compactTouchLayout,
                         gridFocused = focusZone == LiveTvFocusZone.CHANNEL_LIST || focusZone == LiveTvFocusZone.EPG,
                         onChannelSelect = { channel, _ -> selectChannel(channel) },
@@ -2745,6 +2826,23 @@ private fun LiveCategoryTree.countForCategory(categoryId: String): Int? {
         adult.categories.asSequence(),
         hidden.categories.asSequence(),
     ).flatten().findCount()
+}
+
+private val IptvGroupPipeSpacingRegex = Regex("""\s*\|\s*""")
+private val IptvGroupWhitespaceRegex = Regex("""\s+""")
+
+private fun looseIptvGroupKey(group: String?): String {
+    return group.orEmpty()
+        .trim()
+        .replace(IptvGroupPipeSpacingRegex, "|")
+        .replace(IptvGroupWhitespaceRegex, " ")
+        .lowercase()
+}
+
+private fun compactIptvGroupKey(group: String?): String {
+    return group.orEmpty()
+        .lowercase()
+        .filter { it.isLetterOrDigit() }
 }
 
 private fun classifyPlaybackError(error: PlaybackException): String {
