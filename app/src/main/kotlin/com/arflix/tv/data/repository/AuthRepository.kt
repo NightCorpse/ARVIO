@@ -371,6 +371,7 @@ class AuthRepository @Inject constructor(
     private val PROFILE_SYNC_PAYLOAD_KEY = "__arvioAccountSyncPayload"
     private val PROFILE_SYNC_UPDATED_AT_KEY = "__arvioAccountSyncUpdatedAt"
     private val PROFILE_SYNC_LEGACY_ADDONS_KEY = "__arvioLegacyAddons"
+    private val ACCOUNT_SYNC_SOURCE_NETLIFY = "netlify_account_sync"
     private val ACCOUNT_SYNC_SOURCE_PRIMARY = "account_sync_state"
     private val ACCOUNT_SYNC_SOURCE_USER_SETTINGS = "user_settings"
     private val ACCOUNT_SYNC_SOURCE_PROFILE_ADDONS = "profile_addons"
@@ -901,6 +902,13 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    fun getCurrentUserEmail(): String? {
+        return when (val state = _authState.value) {
+            is AuthState.Authenticated -> state.email
+            else -> _userProfile.value?.email
+        }?.takeIf { it.isNotBlank() }
+    }
+
     suspend fun getCurrentUserIdForSync(): String? {
         getCurrentUserId()?.takeIf { it.isNotBlank() }?.let { return it }
 
@@ -1223,11 +1231,33 @@ class AuthRepository @Inject constructor(
 
     suspend fun loadAccountSyncPayload(): Result<String?> {
         val userId = getCurrentUserIdForSync() ?: return Result.failure(Exception("Not logged in"))
-        val accountSyncResult = loadAccountSyncPayloadFromAccountSyncState(userId)
-        val userSettingsResult = loadAccountSyncPayloadFromUserSettings()
-        val profileResult = loadAccountSyncPayloadFromProfileAddons()
+        val netlifyResult = if (Constants.USE_NETLIFY_CLOUD_SYNC) {
+            loadAccountSyncPayloadFromNetlify()
+        } else {
+            Result.success(null)
+        }
+        val netlifyPayload = netlifyResult.getOrNull()?.payload
+        val shouldCheckSupabaseFallback = !Constants.USE_NETLIFY_CLOUD_SYNC ||
+            netlifyPayload.isNullOrBlank() ||
+            accountSyncPayloadRestoreRank(netlifyPayload) < 70
 
-        val bestPayload = listOf(accountSyncResult, userSettingsResult, profileResult)
+        val accountSyncResult = if (shouldCheckSupabaseFallback) {
+            loadAccountSyncPayloadFromAccountSyncState(userId)
+        } else {
+            Result.success(null)
+        }
+        val userSettingsResult = if (shouldCheckSupabaseFallback) {
+            loadAccountSyncPayloadFromUserSettings()
+        } else {
+            Result.success(null)
+        }
+        val profileResult = if (shouldCheckSupabaseFallback) {
+            loadAccountSyncPayloadFromProfileAddons()
+        } else {
+            Result.success(null)
+        }
+
+        val bestPayload = listOf(netlifyResult, accountSyncResult, userSettingsResult, profileResult)
             .mapNotNull { it.getOrNull() }
             .filter { it.payload.isNotBlank() }
             .maxWithOrNull(
@@ -1246,7 +1276,12 @@ class AuthRepository @Inject constructor(
                     "coverage=${accountSyncPayloadScopedCoverage(bestPayload.payload)} " +
                     "updated=${bestPayload.updatedAtMillis}"
             )
-            if (bestPayload.source != ACCOUNT_SYNC_SOURCE_PRIMARY) {
+            val canonicalSource = if (Constants.USE_NETLIFY_CLOUD_SYNC) {
+                ACCOUNT_SYNC_SOURCE_NETLIFY
+            } else {
+                ACCOUNT_SYNC_SOURCE_PRIMARY
+            }
+            if (bestPayload.source != canonicalSource) {
                 runCatching { saveAccountSyncPayload(bestPayload.payload) }
                     .onSuccess { result ->
                         if (result.isFailure) {
@@ -1274,16 +1309,44 @@ class AuthRepository @Inject constructor(
             return Result.success(bestPayload.payload)
         }
 
-        if (accountSyncResult.isSuccess || userSettingsResult.isSuccess || profileResult.isSuccess) {
+        if (netlifyResult.isSuccess || accountSyncResult.isSuccess || userSettingsResult.isSuccess || profileResult.isSuccess) {
             return Result.success(null)
         }
 
         return Result.failure(
-            accountSyncResult.exceptionOrNull()
+            netlifyResult.exceptionOrNull()
+                ?: accountSyncResult.exceptionOrNull()
                 ?: userSettingsResult.exceptionOrNull()
                 ?: profileResult.exceptionOrNull()
                 ?: IllegalStateException("Cloud sync payload unavailable")
         )
+    }
+
+    private suspend fun loadAccountSyncPayloadFromNetlify(): Result<AccountSyncPayloadCandidate?> {
+        return runCatching {
+            val responseBody = callNetlifyFunction(
+                url = Constants.NETLIFY_ACCOUNT_SYNC_PULL_URL,
+                body = JSONObject().toString()
+            )
+            val json = JSONObject(responseBody)
+            val payloadValue = json.opt("payload") ?: return@runCatching null
+            if (payloadValue == JSONObject.NULL) return@runCatching null
+            val payload = when (payloadValue) {
+                is JSONObject -> payloadValue.toString()
+                is String -> payloadValue
+                else -> payloadValue.toString()
+            }.takeIf { it.isNotBlank() && it != "null" } ?: return@runCatching null
+
+            AccountSyncPayloadCandidate(
+                source = ACCOUNT_SYNC_SOURCE_NETLIFY,
+                payload = payload,
+                updatedAtMillis = maxOf(
+                    payloadUpdatedAtMillis(payload),
+                    parseInstantMillis(json.optString("updatedAt").takeIf { it.isNotBlank() }),
+                    parseInstantMillis(json.optString("payloadUpdatedAt").takeIf { it.isNotBlank() })
+                )
+            )
+        }
     }
 
     private suspend fun loadAccountSyncPayloadFromAccountSyncState(userId: String): Result<AccountSyncPayloadCandidate?> {
@@ -1306,6 +1369,25 @@ class AuthRepository @Inject constructor(
 
     suspend fun saveAccountSyncPayload(payload: String): Result<Unit> {
         val userId = getCurrentUserIdForSync() ?: return Result.failure(Exception("Not logged in"))
+        if (Constants.USE_NETLIFY_CLOUD_SYNC) {
+            val netlifyResult = saveAccountSyncPayloadToNetlify(payload)
+            if (netlifyResult.isSuccess) {
+                if (com.arflix.tv.BuildConfig.ENABLE_SUPABASE_SYNC_MIRROR) {
+                    runCatching { saveAccountSyncPayloadViaRpc(userId, payload) }
+                }
+                return Result.success(Unit)
+            }
+            val netlifyException = netlifyResult.exceptionOrNull()
+            if (netlifyException is AccountSyncPayloadRejectedException) {
+                return Result.failure(netlifyException)
+            }
+            AppLogger.breadcrumb(
+                tag = "CloudSync",
+                message = "netlify_save_failed_falling_back_to_supabase",
+                severity = "warning"
+            )
+        }
+
         val rpcResult = saveAccountSyncPayloadViaRpc(userId, payload)
         if (rpcResult.isSuccess) {
             val profileAddonsResult = saveAccountSyncPayloadToProfileAddons(userId, payload)
@@ -1374,6 +1456,27 @@ class AuthRepository @Inject constructor(
         )
     }
 
+    private suspend fun saveAccountSyncPayloadToNetlify(payload: String): Result<Unit> {
+        return try {
+            val payloadValue = runCatching { JSONObject(payload) }.getOrNull() ?: payload
+            val body = JSONObject()
+                .put("payload", payloadValue)
+                .toString()
+            val responseBody = callNetlifyFunction(
+                url = Constants.NETLIFY_ACCOUNT_SYNC_PUSH_URL,
+                body = body
+            )
+            val responseJson = runCatching { JSONObject(responseBody) }.getOrNull()
+            if (responseJson?.optBoolean("accepted", true) == false) {
+                val reason = responseJson.optString("reason", "existing_snapshot_is_richer")
+                throw AccountSyncPayloadRejectedException("Cloud sync upload rejected: $reason")
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     private suspend fun saveAccountSyncPayloadViaRpc(userId: String, payload: String): Result<Unit> {
         return try {
             val session = ensureValidSession() ?: return Result.failure(Exception("Session expired"))
@@ -1419,6 +1522,13 @@ class AuthRepository @Inject constructor(
 
     suspend fun getAccountSyncEventCursor(): Result<Long> {
         return runCatching {
+            if (Constants.USE_NETLIFY_CLOUD_SYNC) {
+                val response = callNetlifyFunction(
+                    url = Constants.NETLIFY_ACCOUNT_SYNC_CURSOR_URL,
+                    body = JSONObject().toString()
+                )
+                return@runCatching JSONObject(response).optLong("cursor", 0L)
+            }
             val body = JSONObject().toString()
             val response = callSupabaseRpc("account_sync_event_cursor", body)
             response.trim().trim('"').toLongOrNull()
@@ -1438,6 +1548,16 @@ class AuthRepository @Inject constructor(
 
     suspend fun pullAccountSyncDelta(sinceEventId: Long, limit: Int = 500): Result<String> {
         return runCatching {
+            if (Constants.USE_NETLIFY_CLOUD_SYNC) {
+                val body = JSONObject()
+                    .put("sinceEventId", sinceEventId.coerceAtLeast(0L))
+                    .put("limit", limit.coerceIn(1, 1000))
+                    .toString()
+                return@runCatching callNetlifyFunction(
+                    url = Constants.NETLIFY_ACCOUNT_SYNC_DELTA_URL,
+                    body = body
+                )
+            }
             val body = JSONObject()
                 .put("p_since_event_id", sinceEventId.coerceAtLeast(0L))
                 .put("p_limit", limit.coerceIn(1, 1000))
@@ -1458,6 +1578,29 @@ class AuthRepository @Inject constructor(
                 .put("p_limit", limit.coerceIn(1, 5000))
                 .toString()
             callSupabaseRpc("pull_account_sync_items", body)
+        }
+    }
+
+    private suspend fun callNetlifyFunction(url: String, body: String): String {
+        val accessToken = getAccessToken()?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("Session expired")
+        return withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $accessToken")
+                .header("Cache-Control", "no-cache, no-store")
+                .post(body.toRequestBody(jsonMediaType))
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IllegalStateException(
+                        "Netlify cloud sync failed (${response.code}): ${safePostgrestError(responseBody)}"
+                    )
+                }
+                responseBody
+            }
         }
     }
 

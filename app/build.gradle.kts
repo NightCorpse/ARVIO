@@ -42,6 +42,9 @@ android {
         buildConfigField("Boolean", "ENABLE_REALTIME_CLOUD_SYNC", "true")
         buildConfigField("Boolean", "ENABLE_REALTIME_WATCH_SYNC", "false")
         buildConfigField("Boolean", "ENABLE_PERIODIC_CLOUD_PULL", "false")
+        buildConfigField("Boolean", "ENABLE_NETLIFY_CLOUD_SYNC", "true")
+        buildConfigField("Boolean", "ENABLE_SUPABASE_SYNC_MIRROR", "false")
+        buildConfigField("String", "NETLIFY_BACKEND_URL", "\"https://auth.arvio.tv/.netlify/functions\"")
 
 
         // Support both 32-bit and 64-bit devices (required for Google Play since 2019)

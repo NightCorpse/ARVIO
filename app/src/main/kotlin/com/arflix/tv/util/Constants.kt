@@ -12,6 +12,10 @@ object Constants {
     // Supabase - keys from BuildConfig (secrets.properties).
     val SUPABASE_URL: String get() = BuildConfig.SUPABASE_URL
     val SUPABASE_ANON_KEY: String get() = BuildConfig.SUPABASE_ANON_KEY
+    val NETLIFY_BACKEND_URL: String
+        get() = BuildConfig.NETLIFY_BACKEND_URL.trim().trimEnd('/')
+    val USE_NETLIFY_CLOUD_SYNC: Boolean
+        get() = BuildConfig.ENABLE_NETLIFY_CLOUD_SYNC && NETLIFY_BACKEND_URL.startsWith("https://")
 
     // Edge Function proxy URLs used by backend/proxy-capable flows.
     val TMDB_PROXY_URL: String get() = "${SUPABASE_URL}/functions/v1/tmdb-proxy"
@@ -21,7 +25,16 @@ object Constants {
     val TV_AUTH_POLL_URL: String get() = "${SUPABASE_URL}/functions/v1/tv-auth-poll"
     val TV_AUTH_COMPLETE_URL: String get() = "${SUPABASE_URL}/functions/v1/tv-auth-complete"
     val CLOUD_AUTH_EMAIL_URL: String get() = "${SUPABASE_URL}/functions/v1/cloud-auth-email"
-    val APP_USAGE_EVENT_URL: String get() = "${SUPABASE_URL}/functions/v1/app-usage-event"
+    val NETLIFY_ACCOUNT_SYNC_PULL_URL: String get() = "$NETLIFY_BACKEND_URL/account-sync-pull"
+    val NETLIFY_ACCOUNT_SYNC_PUSH_URL: String get() = "$NETLIFY_BACKEND_URL/account-sync-push"
+    val NETLIFY_ACCOUNT_SYNC_CURSOR_URL: String get() = "$NETLIFY_BACKEND_URL/account-sync-cursor"
+    val NETLIFY_ACCOUNT_SYNC_DELTA_URL: String get() = "$NETLIFY_BACKEND_URL/account-sync-delta"
+    val APP_USAGE_EVENT_URL: String
+        get() = if (USE_NETLIFY_CLOUD_SYNC) {
+            "$NETLIFY_BACKEND_URL/app-usage-event"
+        } else {
+            "${SUPABASE_URL}/functions/v1/app-usage-event"
+        }
 
     // API base URLs.
     const val TMDB_BASE_URL = "https://api.themoviedb.org/3/"
