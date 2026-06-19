@@ -846,24 +846,34 @@ class AuthRepository @Inject constructor(
      * Sign out
      */
     suspend fun signOut() {
-        // Push final state before signing out
-        try { cloudSyncRepositoryProvider.get().pushToCloud() } catch (_: Exception) {}
+        // Push final state before signing out, but never let a slow network/cloud
+        // request trap the user on the settings screen.
+        withTimeoutOrNull(2_500L) {
+            runCatching { cloudSyncRepositoryProvider.get().pushToCloud(force = true) }
+                .onFailure { error ->
+                    AppLogger.breadcrumb(
+                        tag = "Auth",
+                        message = "sign_out_final_push_failed ${error::class.java.simpleName}",
+                        severity = "warning"
+                    )
+                }
+        } ?: AppLogger.breadcrumb(
+            tag = "Auth",
+            message = "sign_out_final_push_timeout",
+            severity = "warning"
+        )
 
         if (!Constants.USE_NETLIFY_CLOUD_SYNC) {
-            try {
-                supabase.auth.signOut()
-            } catch (e: Exception) {
+            withTimeoutOrNull(2_000L) {
+                runCatching { supabase.auth.signOut() }
             }
         }
 
-        try {
-            traktRepositoryProvider.get().logout()
-        } catch (e: Exception) {
-        }
+        runCatching { traktRepositoryProvider.get().logout() }
 
         // Clear ALL local data (auth + settings + user preferences)
-        context.authDataStore.edit { prefs -> prefs.clear() }
-        context.settingsDataStore.edit { prefs -> prefs.clear() }
+        runCatching { context.authDataStore.edit { prefs -> prefs.clear() } }
+        runCatching { context.settingsDataStore.edit { prefs -> prefs.clear() } }
 
         _userProfile.value = null
         _authState.value = AuthState.NotAuthenticated
