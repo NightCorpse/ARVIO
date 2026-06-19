@@ -41,11 +41,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import retrofit2.HttpException
 import java.text.Normalizer
 import java.text.SimpleDateFormat
@@ -77,7 +74,6 @@ class TraktRepository @Inject constructor(
 ) {
     private val gson = Gson()
     private val watchlistHttpClient by lazy { okHttpClient }
-    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     // Lazy sync service to avoid circular dependency
     private val syncService: TraktSyncService by lazy { syncServiceProvider.get() }
@@ -181,8 +177,6 @@ class TraktRepository @Inject constructor(
 
     suspend fun pollForToken(deviceCode: String): TraktToken {
         val token = requestTraktToken(
-            path = "/oauth/device/token",
-            payload = JSONObject().put("code", deviceCode),
             directFallback = {
                 traktApi.pollToken(
                     TokenPollRequest(
@@ -198,15 +192,12 @@ class TraktRepository @Inject constructor(
     }
 
     private suspend fun requestTraktToken(
-        path: String,
-        payload: JSONObject,
         directFallback: suspend () -> TraktToken
     ): TraktToken {
-        return if (clientSecret.isBlank()) {
-            requestTraktTokenViaProxy(path, payload)
-        } else {
-            directFallback()
+        if (clientSecret.isBlank()) {
+            throw IllegalStateException("Trakt credentials missing in this APK")
         }
+        return directFallback()
     }
 
     private fun isPermanentTokenRefreshFailure(e: Throwable): Boolean {
@@ -228,53 +219,8 @@ class TraktRepository @Inject constructor(
         clearProfileScopedMemoryCaches(clearPreloaded = false)
     }
 
-    private suspend fun requestTraktTokenViaProxy(path: String, payload: JSONObject): TraktToken = withContext(Dispatchers.IO) {
-        val url = Constants.TRAKT_PROXY_URL.toHttpUrl().newBuilder()
-            .addQueryParameter("path", path)
-            .addQueryParameter("method", "POST")
-            .build()
-        val request = Request.Builder()
-            .url(url)
-            .header("apikey", Constants.APP_ANON_KEY)
-            .header("Authorization", "Bearer ${Constants.APP_ANON_KEY}")
-            .post(payload.toString().toRequestBody(jsonMediaType))
-            .build()
-
-        watchlistHttpClient.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val error = parseTraktProxyError(responseBody, "Trakt token request failed")
-                if (
-                    path == "/oauth/device/token" &&
-                    response.code == 400 &&
-                    (error == "Trakt token request failed" || responseBody.contains("\"status\":400"))
-                ) {
-                    throw IllegalStateException("authorization_pending")
-                }
-                throw IllegalStateException(error)
-            }
-            gson.fromJson(responseBody, TraktToken::class.java)
-                ?: throw IllegalStateException("Trakt token response was empty")
-        }
-    }
-
-    private fun parseTraktProxyError(body: String, fallback: String): String {
-        return runCatching {
-            val json = JSONObject(body)
-            json.optString("error_description").ifBlank {
-                json.optString("error").ifBlank {
-                    json.optString("message").ifBlank { fallback }
-                }
-            }
-        }.getOrDefault(fallback)
-    }
-
     private suspend fun refreshTraktToken(refreshToken: String): TraktToken {
         return requestTraktToken(
-            path = "/oauth/token",
-            payload = JSONObject()
-                .put("refresh_token", refreshToken)
-                .put("grant_type", "refresh_token"),
             directFallback = {
                 traktApi.refreshToken(
                     RefreshTokenRequest(
