@@ -1852,17 +1852,13 @@ class TraktSyncService @Inject constructor(
         return if (clientSecret.isBlank()) {
             refreshTraktTokenViaProxy(refreshToken)
         } else {
-            runCatching {
-                traktApi.refreshToken(
-                    RefreshTokenRequest(
-                        refreshToken = refreshToken,
-                        clientId = clientId,
-                        clientSecret = clientSecret
-                    )
+            traktApi.refreshToken(
+                RefreshTokenRequest(
+                    refreshToken = refreshToken,
+                    clientId = clientId,
+                    clientSecret = clientSecret
                 )
-            }.getOrElse {
-                refreshTraktTokenViaProxy(refreshToken)
-            }
+            )
         }
     }
 

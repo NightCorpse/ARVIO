@@ -205,8 +205,7 @@ class TraktRepository @Inject constructor(
         return if (clientSecret.isBlank()) {
             requestTraktTokenViaProxy(path, payload)
         } else {
-            runCatching { directFallback() }
-                .getOrElse { requestTraktTokenViaProxy(path, payload) }
+            directFallback()
         }
     }
 
