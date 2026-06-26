@@ -1,6 +1,7 @@
 package com.arflix.tv.data.model
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -74,5 +75,15 @@ class SportsAddonCapabilitiesTest {
         assertTrue(SportsAddonCapabilities.isSportsHomeStatus("sports_event:addon|sports|event"))
         assertTrue(SportsAddonCapabilities.isSportsHomeStatus("sports_locked:locked"))
         assertFalse(SportsAddonCapabilities.isSportsHomeStatus("collection:netflix"))
+    }
+
+    @Test
+    fun `sports collection catalog ids are recognized`() {
+        val catalogId = SportsAddonCapabilities.sportsCollectionCatalogId("basketball")
+
+        assertTrue(SportsAddonCapabilities.isSportsCollectionCatalogId(catalogId))
+        assertTrue(SportsAddonCapabilities.sportIdFromCollectionCatalogId(catalogId) == "basketball")
+        assertFalse(SportsAddonCapabilities.isSportsCollectionCatalogId("collection_service_netflix"))
+        assertNull(SportsAddonCapabilities.sportIdFromCollectionCatalogId("collection_service_netflix"))
     }
 }

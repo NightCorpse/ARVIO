@@ -361,6 +361,17 @@ fun AppNavigation(
                 onNavigateToDetails = { mediaType, mediaId ->
                     navController.navigate(Screen.Details.createRoute(mediaType, mediaId))
                 },
+                onNavigateToPlayer = { mediaType, mediaId, streamUrl, preferredAddonId, preferredSourceName ->
+                    navController.navigate(
+                        Screen.Player.createRoute(
+                            mediaType = mediaType,
+                            mediaId = mediaId,
+                            streamUrl = streamUrl,
+                            preferredAddonId = preferredAddonId,
+                            preferredSourceName = preferredSourceName
+                        )
+                    )
+                },
                 onNavigateToHome = { navigateHome() },
                 onNavigateToSearch = { navigateTopLevel(Screen.Search.route) },
                 onNavigateToWatchlist = { navigateTopLevel(Screen.Watchlist.route) },

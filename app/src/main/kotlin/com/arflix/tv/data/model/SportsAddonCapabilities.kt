@@ -8,6 +8,7 @@ object SportsAddonCapabilities {
     const val SPORTS_STATUS_PREFIX = "sports:"
     const val SPORTS_LOCKED_STATUS_PREFIX = "sports_locked:"
     const val SPORTS_EVENT_STATUS_PREFIX = "sports_event:"
+    const val SPORTS_COLLECTION_PREFIX = "sports_collection:"
 
     private val sportTerms = setOf(
         "sport",
@@ -43,6 +44,17 @@ object SportsAddonCapabilities {
 
     fun isSportsEventStatus(status: String?): Boolean =
         status?.startsWith(SPORTS_EVENT_STATUS_PREFIX) == true
+
+    fun sportsCollectionCatalogId(sportId: String): String =
+        "$SPORTS_COLLECTION_PREFIX$sportId"
+
+    fun isSportsCollectionCatalogId(catalogId: String?): Boolean =
+        catalogId?.startsWith(SPORTS_COLLECTION_PREFIX) == true
+
+    fun sportIdFromCollectionCatalogId(catalogId: String): String? =
+        catalogId.takeIf { isSportsCollectionCatalogId(it) }
+            ?.removePrefix(SPORTS_COLLECTION_PREFIX)
+            ?.takeIf { it.isNotBlank() }
 
     fun isSportsLiveTvAddon(addon: Addon): Boolean =
         addon.manifest?.let(::isSportsLiveTvManifest) == true
