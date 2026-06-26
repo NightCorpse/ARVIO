@@ -170,6 +170,7 @@ data class StremioMetaPreview(
     val description: String? = null,
     val genres: List<String>? = null,
     val released: String? = null,
+    val releaseInfo: String? = null,
     val year: String? = null,
     @SerializedName("imdb_id") val imdbId: String? = null,
     @SerializedName("tmdb_id") val tmdbId: String? = null,

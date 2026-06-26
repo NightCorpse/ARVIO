@@ -51,11 +51,11 @@ class SportsRepository @Inject constructor(
         SportsCategoryDef("football", "Football", setOf("football", "soccer")),
         SportsCategoryDef("basketball", "Basketball", setOf("basketball", "nba")),
         SportsCategoryDef("tennis", "Tennis", setOf("tennis", "atp", "wta")),
-        SportsCategoryDef("motorsport", "Motorsport", setOf("motorsport", "formula", "f1", "racing")),
+        SportsCategoryDef("motor-sports", "Motorsport", setOf("motorsport", "motor sports", "motor_sports", "motor-sports", "formula", "f1", "racing")),
         SportsCategoryDef("rugby", "Rugby", setOf("rugby")),
         SportsCategoryDef("hockey", "Hockey", setOf("hockey", "nhl")),
         SportsCategoryDef("baseball", "Baseball", setOf("baseball", "mlb")),
-        SportsCategoryDef("combat", "Combat Sports", setOf("boxing", "ufc", "mma", "combat"))
+        SportsCategoryDef("combat", "Combat Sports", setOf("boxing", "ufc", "mma", "combat", "fight"))
     )
 
     fun defaultHomeRows(): List<Category> = buildLockedRows()
@@ -276,8 +276,8 @@ class SportsRepository @Inject constructor(
             title = title,
             subtitle = listOf(genreText, addon.name).filter { it.isNotBlank() }.joinToString(" | "),
             overview = description.orEmpty(),
-            year = year ?: released?.take(4).orEmpty(),
-            releaseDate = released,
+            year = year ?: released?.take(4) ?: releaseInfo.orEmpty(),
+            releaseDate = released ?: releaseInfo,
             mediaType = MediaType.TV,
             image = poster ?: logo ?: "",
             backdrop = background ?: poster,
@@ -291,6 +291,7 @@ class SportsRepository @Inject constructor(
         val rawUrl = getStreamUrl()?.takeIf { it.isNotBlank() }
             ?: ytId?.takeIf { it.isNotBlank() }?.let { "https://www.youtube.com/watch?v=$it" }
             ?: return null
+        if (!isPlayableSportsStream(rawUrl)) return null
         val requestHeaders = mergeHeaders(headers, behaviorHints?.headers, behaviorHints?.proxyHeaders?.request)
         val apiHints = behaviorHints
         val torrentName = getTorrentName().ifBlank { title ?: name ?: fallbackTitle }
@@ -327,6 +328,32 @@ class SportsRepository @Inject constructor(
             sources = sources.orEmpty(),
             description = description
         )
+    }
+
+    private fun StremioStream.isPlayableSportsStream(rawUrl: String): Boolean {
+        val url = rawUrl.trim().lowercase(Locale.US)
+        val text = listOf(name, title, description, rawUrl)
+            .filterNotNull()
+            .joinToString(" ")
+            .lowercase(Locale.US)
+
+        // Highfly and similar sports addons use these as CTA/error placeholders.
+        if (url == "https://www.google.com" || url == "http://www.google.com" ||
+            url == "https://google.com" || url == "http://google.com"
+        ) return false
+
+        // A notWebReady sports stream generally means "open externally / premium / unavailable";
+        // ARVIO should only launch streams it can play in the native player.
+        if (behaviorHints?.notWebReady == true) return false
+
+        val blockedPhrases = listOf(
+            "upgrade to watch",
+            "premium",
+            "unavailable",
+            "stream has ended",
+            "not available"
+        )
+        return blockedPhrases.none { phrase -> text.contains(phrase) }
     }
 
     private fun looksLive(meta: StremioMetaPreview, catalog: AddonCatalog): Boolean {

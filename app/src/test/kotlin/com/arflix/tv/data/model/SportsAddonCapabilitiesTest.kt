@@ -46,6 +46,29 @@ class SportsAddonCapabilitiesTest {
     }
 
     @Test
+    fun `highfly style sport manifest is detected`() {
+        val manifest = AddonManifest(
+            id = "community.sports.fly",
+            name = "Sports Streams",
+            version = "1.2.0",
+            description = "Live and upcoming sports matches",
+            types = listOf("sport"),
+            resources = listOf(
+                AddonResource(name = "catalog", types = listOf("sport")),
+                AddonResource(name = "meta", types = listOf("sport"), idPrefixes = listOf("streamed", "sf", "recap", "leaf")),
+                AddonResource(name = "stream", types = listOf("sport"), idPrefixes = listOf("streamed", "sf", "recap", "leaf"))
+            ),
+            catalogs = listOf(
+                AddonCatalog(type = "sport", id = "sports_live", name = "Live Now"),
+                AddonCatalog(type = "sport", id = "sports_football", name = "Football")
+            ),
+            idPrefixes = listOf("streamed", "sf", "recap", "leaf")
+        )
+
+        assertTrue(SportsAddonCapabilities.isSportsLiveTvManifest(manifest))
+    }
+
+    @Test
     fun `sports statuses are recognized as home sports items`() {
         assertTrue(SportsAddonCapabilities.isSportsHomeStatus("sports:football"))
         assertTrue(SportsAddonCapabilities.isSportsHomeStatus("sports_event:addon|sports|event"))
