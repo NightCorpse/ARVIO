@@ -170,21 +170,8 @@ class SportsRepository @Inject constructor(
         sportsRows: List<Category>
     ): List<Category> {
         if (sportsRows.isEmpty()) return categories
-        val base = categories.filterNot { category ->
-            category.id == SportsAddonCapabilities.SPORTS_CATEGORY_ROW_ID ||
-                category.id == SportsAddonCapabilities.POPULAR_LIVE_TV_ROW_ID
-        }
-        val insertAfter = base.indexOfFirst { category ->
-            category.id.equals("trending_anime", ignoreCase = true) ||
-                category.title.equals("Trending Anime", ignoreCase = true) ||
-                category.title.equals("Trending in Anime", ignoreCase = true)
-        }.takeIf { it >= 0 } ?: base.indexOfFirst { category ->
-            category.id.contains("anime", ignoreCase = true) ||
-                category.title.contains("anime", ignoreCase = true)
-        }.takeIf { it >= 0 }
-
-        val insertIndex = if (insertAfter != null) insertAfter + 1 else base.size
-        return base.take(insertIndex) + sportsRows + base.drop(insertIndex)
+        val sportsById = sportsRows.associateBy { it.id }
+        return categories.map { category -> sportsById[category.id] ?: category }
     }
 
     fun selectedSportIdFromStatus(status: String?): String? {

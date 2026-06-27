@@ -32,6 +32,7 @@ import com.arflix.tv.data.model.MediaItem
 import com.arflix.tv.data.model.MediaType
 import com.arflix.tv.data.model.PersonDetails
 import com.arflix.tv.data.model.Review
+import com.arflix.tv.data.model.SportsAddonCapabilities
 import com.arflix.tv.util.CatalogUrlParser
 import com.arflix.tv.util.Constants
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -593,6 +594,8 @@ class MediaRepository @Inject constructor(
                 CatalogConfig("trending_movies", "Trending in Movies", CatalogSourceType.MDBLIST, isPreinstalled = true, sourceUrl = "https://mdblist.com/lists/snoak/trending-movies", sourceRef = "mdblist:https://mdblist.com/lists/snoak/trending-movies"),
                 CatalogConfig("trending_tv", "Trending in Shows", CatalogSourceType.MDBLIST, isPreinstalled = true, sourceUrl = "https://mdblist.com/lists/snoak/trakt-s-trending-shows", sourceRef = "mdblist:https://mdblist.com/lists/snoak/trakt-s-trending-shows"),
                 CatalogConfig("trending_anime", "Trending in Anime", CatalogSourceType.MDBLIST, isPreinstalled = true, sourceUrl = "https://mdblist.com/lists/snoak/trending-anime-shows", sourceRef = "mdblist:https://mdblist.com/lists/snoak/trending-anime-shows"),
+                CatalogConfig(SportsAddonCapabilities.SPORTS_CATEGORY_ROW_ID, "Sports", CatalogSourceType.PREINSTALLED, isPreinstalled = true),
+                CatalogConfig(SportsAddonCapabilities.POPULAR_LIVE_TV_ROW_ID, "Popular Live Sports", CatalogSourceType.PREINSTALLED, isPreinstalled = true),
                 CatalogConfig("top10_movies_today", "Top 10 Movies Today", CatalogSourceType.MDBLIST, isPreinstalled = true, sourceUrl = "https://mdblist.com/lists/snoak/top-10-movies-of-the-day", sourceRef = "mdblist:https://mdblist.com/lists/snoak/top-10-movies-of-the-day"),
                 CatalogConfig("top10_shows_today", "Top 10 Shows Today", CatalogSourceType.MDBLIST, isPreinstalled = true, sourceUrl = "https://mdblist.com/lists/snoak/top-10-shows-of-the-day", sourceRef = "mdblist:https://mdblist.com/lists/snoak/top-10-shows-of-the-day"),
                 CatalogConfig("just_added", "Just Added", CatalogSourceType.MDBLIST, isPreinstalled = true, sourceUrl = "https://mdblist.com/lists/snoak/latest-movies-digital-release", sourceRef = "mdblist:https://mdblist.com/lists/snoak/latest-movies-digital-release"),

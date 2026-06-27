@@ -289,7 +289,7 @@ class HomeViewModel @Inject constructor(
     private fun isActionableMediaItem(item: MediaItem): Boolean {
         // Non-actionable items are expected during filtering: invalid IDs cannot be opened,
         // placeholders are synthetic UI entries, and collection tiles use their own handling.
-        return item.id > 0 && !item.isPlaceholder && !isCollectionItem(item)
+        return item.id > 0 && !item.isPlaceholder && !isCollectionItem(item) && !isSportsHomeItem(item)
     }
 
     private fun continueWatchingKey(mediaType: MediaType, id: Int): String {
@@ -789,6 +789,10 @@ class HomeViewModel @Inject constructor(
     private fun isCollectionRailConfig(cfg: CatalogConfig): Boolean = cfg.kind == CatalogKind.COLLECTION_RAIL
 
     private fun isCollectionTileConfig(cfg: CatalogConfig): Boolean = cfg.kind == CatalogKind.COLLECTION
+
+    private fun isSportsCatalogRow(categoryId: String): Boolean =
+        categoryId == SportsAddonCapabilities.SPORTS_CATEGORY_ROW_ID ||
+            categoryId == SportsAddonCapabilities.POPULAR_LIVE_TV_ROW_ID
 
     private fun collectionRowId(group: CollectionGroupKind): String {
         return "collection_row_${group.name.lowercase(Locale.US)}"
@@ -2095,6 +2099,7 @@ class HomeViewModel @Inject constructor(
                     val baseById = LinkedHashMap<String, Category>().apply {
                         currentBaseCategories.forEach { put(it.id, it) }
                         baseCategories.forEach { put(it.id, it) }
+                        _sportsHomeRows.value.forEach { put(it.id, it) }
                         // Inject Favorite TV so catalog ordering picks it up, or remove
                         // stale skeleton/placeholder if no favorites exist for this profile.
                         if (favoriteTvCategory != null) {
@@ -2321,7 +2326,9 @@ class HomeViewModel @Inject constructor(
                     if (category.id != "continue_watching" && !category.id.startsWith("collection_row_")) {
                         categoryPaginationStates[category.id] = CategoryPaginationState(
                             loadedCount = category.items.size,
-                            hasMore = category.items.size >= getCategoryPageSize(category.id) && !isHardCappedTop10Catalog(category.id)
+                            hasMore = !isSportsCatalogRow(category.id) &&
+                                category.items.size >= getCategoryPageSize(category.id) &&
+                                !isHardCappedTop10Catalog(category.id)
                         )
                     }
                 }
