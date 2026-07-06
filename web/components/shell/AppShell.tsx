@@ -12,6 +12,7 @@ import { ProfileSelectionScreen } from "@/components/profile/ProfileSelectionScr
 import { SearchScreen } from "@/components/search/SearchScreen";
 import { SettingsScreen } from "@/components/settings/SettingsScreen";
 import { WatchlistScreen } from "@/components/watchlist/WatchlistScreen";
+import { BackHandler } from "./BackHandler";
 import { ExternalPlaybackPrompt } from "./ExternalPlaybackPrompt";
 import { Toast } from "./Toast";
 import { TopNav } from "./TopNav";
@@ -89,6 +90,7 @@ export function AppShell() {
 
       <PlayerOverlay />
       <ExternalPlaybackPrompt />
+      <BackHandler />
       <Toast />
     </main>
   );
