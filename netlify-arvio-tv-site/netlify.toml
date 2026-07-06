@@ -1,2 +1,14 @@
 [build]
   publish = "."
+
+[[redirects]]
+  from = "/app"
+  to = "https://web.arvio.tv/login"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/app/*"
+  to = "https://web.arvio.tv/:splat"
+  status = 302
+  force = true
