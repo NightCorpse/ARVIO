@@ -16,6 +16,14 @@ export function UpdateWatcher() {
     if (!baked) return undefined;
     let disposed = false;
 
+    // Strip the cache-bust param left by a prior update reload so the URL stays
+    // clean and doesn't keep growing across updates.
+    if (window.location.search.includes("_v=")) {
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete("_v");
+      window.history.replaceState(window.history.state, "", clean.toString());
+    }
+
     const check = async () => {
       try {
         const response = await fetch("/version.json", { cache: "no-store" });
@@ -30,7 +38,12 @@ export function UpdateWatcher() {
         const last = Number(window.localStorage.getItem(RELOAD_GUARD_KEY) ?? 0);
         if (Date.now() - last < RELOAD_GUARD_MS) return;
         window.localStorage.setItem(RELOAD_GUARD_KEY, String(Date.now()));
-        window.location.reload();
+        // location.reload() can re-serve cached HTML on iOS; navigating to a
+        // fresh URL forces the document to be re-fetched so it references the
+        // newest hashed CSS/JS. The cache-bust param is stripped on load.
+        const url = new URL(window.location.href);
+        url.searchParams.set("_v", String(payload.v));
+        window.location.replace(url.toString());
       } catch {
         // Offline or blocked — retry on the next trigger.
       }

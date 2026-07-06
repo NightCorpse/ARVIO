@@ -12,10 +12,10 @@ export const metadata: Metadata = {
       { url: "/arvio-icon-192.png", sizes: "192x192", type: "image/png" },
       { url: "/arvio-icon-512.png", sizes: "512x512", type: "image/png" }
     ],
-    // ?v= busts iOS's per-origin touch-icon cache — if Safari cached a miss
-    // during an earlier bad-bundle/rate-limit window it keeps showing the "A"
-    // fallback on Add to Home Screen until the URL changes.
-    apple: [{ url: "/apple-touch-icon.png?v=2", sizes: "180x180", type: "image/png" }]
+    // A brand-new FILENAME (not a ?v= query, which iOS Safari's icon cache can
+    // ignore) forces the touch icon to be re-fetched — Safari cached a miss for
+    // the old path and kept showing the "A" fallback on Add to Home Screen.
+    apple: [{ url: "/apple-touch-icon-v3.png", sizes: "180x180", type: "image/png" }]
   },
   appleWebApp: {
     capable: true,
@@ -42,8 +42,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* iOS reads these raw links most reliably when adding to the home
             screen. `precomposed` is the legacy fallback older iOS honors; both
             carry the version bust. */}
-        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2" />
-        <link rel="apple-touch-icon-precomposed" sizes="180x180" href="/apple-touch-icon.png?v=2" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-v3.png" />
+        <link rel="apple-touch-icon-precomposed" sizes="180x180" href="/apple-touch-icon-v3.png" />
       </head>
       <body>
         <UpdateWatcher />

@@ -8239,8 +8239,23 @@ button,
 }
 
 @media (max-width: 860px) {
+  /* Keep the three short status chips (Cloud / Trakt / Sync) side by side —
+     stacking them full-width made them tall, unbalanced bars. */
   .settings-status-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .settings-status-grid div {
+    padding: 10px 12px;
+  }
+
+  .settings-status-grid span {
+    font-size: 11px;
+  }
+
+  .settings-status-grid strong {
+    font-size: 13px;
   }
 
   .option-button {
