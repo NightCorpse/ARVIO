@@ -570,6 +570,33 @@ export function AppProvider({
 
       const cloudCw = historyRows.map(historyToItem);
       const traktPlaybackCw = playbackRows.map(traktPlaybackToMedia).filter(isPausedPlaybackItem);
+
+      // ── Fast paint ─────────────────────────────────────────────────────────
+      // The cloud watchlist + cloud/playback CW are already available now (the
+      // cloud pull is ~400ms). Paint them immediately so both rails appear in
+      // ~1s, WITHOUT waiting on loadTraktUpNext (~120 per-show progress calls)
+      // or the per-item TMDB hydration below. The richer Trakt up-next data
+      // enriches CW a moment later.
+      const fastWatchlistSource = traktRows.length ? traktRows.map(traktItemToMedia) : cloudWatchlistRows;
+      if (fastWatchlistSource.length) {
+        void hydrateTraktItems(fastWatchlistSource).then((hydrated) => {
+          if (hydrated.length) {
+            setWatchlist((current) => current.length ? current : hydrated);
+            try { saveStored(watchlistCacheKey, { at: Date.now(), items: hydrated.slice(0, 60) }); } catch { /* non-fatal */ }
+          }
+        }).catch(() => undefined);
+      }
+      const fastCw = dedupeMedia([...traktPlaybackCw, ...cloudCw]).sort((a, b) => (b.activityAt ?? 0) - (a.activityAt ?? 0));
+      if (fastCw.length) {
+        void hydrateContinueWatchingItems(fastCw).then((hydrated) => {
+          setContinueWatching((current) => current.length ? current : hydrated);
+          setCategories((current) => current.some((c) => c.id === "continue_watching")
+            ? current
+            : [{ id: "continue_watching", title: "Continue Watching", items: hydrated }, ...current]);
+        }).catch(() => undefined);
+      }
+      // ───────────────────────────────────────────────────────────────────────
+
       const upNextRows = traktReady ? await loadTraktUpNext(watchedShowsRows, effectiveSettings.includeSpecials).catch(() => []) : [];
       const playbackShowKeys = new Set(traktPlaybackCw.filter((item) => item.mediaType === "tv").map((item) => `${item.mediaType}:${item.id}`));
       const traktCw = mergeTraktWithLocalResume([
@@ -589,26 +616,24 @@ export function AppProvider({
       // showing the cached rail instead of wiping it with an empty list.
       const traktOutage = traktReady && !cw.length &&
         !playbackRows.length && !watchedShowsRows.length && !watchedMoviesRows.length && !traktRows.length;
+      // Enriched CW (adds Trakt up-next episodes) replaces the fast paint.
       if (!traktOutage) {
         setContinueWatching(cw);
         if (cw.length) saveStored(cwCacheKey, { at: Date.now(), items: cw.slice(0, 20) });
+        setCategories([
+          ...(cw.length ? [{ id: "continue_watching", title: "Continue Watching", items: cw }] : [])
+        ]);
       }
+      // Refresh the watchlist with the authoritative Trakt list if it differs.
       const watchlistSource = traktRows.length ? traktRows.map(traktItemToMedia) : cloudWatchlistRows;
       const hydratedWatchlist = await hydrateTraktItems(watchlistSource);
-      setWatchlist(hydratedWatchlist);
-      // Cache for instant paint next time (only when we actually got data, so a
-      // Trakt outage never overwrites a good cache with an empty list).
       if (hydratedWatchlist.length) {
+        setWatchlist(hydratedWatchlist);
         try {
           saveStored(watchlistCacheKey, { at: Date.now(), items: hydratedWatchlist.slice(0, 60) });
         } catch {
           // Non-fatal.
         }
-      }
-      if (!traktOutage) {
-        setCategories([
-          ...(cw.length ? [{ id: "continue_watching", title: "Continue Watching", items: cw }] : [])
-        ]);
       }
       } catch (error) {
         setToast(error instanceof Error ? error.message : "Failed to load ARVIO");

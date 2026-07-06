@@ -25,7 +25,12 @@ export function DetailsDrawer() {
 }
 
 function needsDetailsHydration(item: MediaItem) {
-  if (item.mediaType === "tv" && !item.seasons?.length) return true;
+  // TV shows ALWAYS need a full details fetch: an item opened from a rail or
+  // Continue Watching may carry a partial/stale `seasons` array (or one built
+  // from a single episode), so trusting `seasons?.length` skipped hydration and
+  // left the details page missing seasons/episodes. getDetails is cached, so
+  // re-fetching a fully-hydrated item is cheap.
+  if (item.mediaType === "tv") return true;
   return !item.cast?.length && !item.related?.length && !item.trailerUrl;
 }
 
