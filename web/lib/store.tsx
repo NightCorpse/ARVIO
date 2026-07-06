@@ -358,6 +358,9 @@ export interface AppStore {
   beginTrakt: () => Promise<void>;
   pollTrakt: () => Promise<void>;
   disconnectTrakt: () => void;
+  // Watchlist list-source switcher (Trakt custom lists / collection).
+  loadTraktLists: () => Promise<Array<{ id: string; name: string }>>;
+  loadTraktListItems: (source: string) => Promise<MediaItem[]>;
 }
 
 const AppContext = createContext<AppStore | null>(null);
@@ -480,11 +483,18 @@ export function AppProvider({
       // profile — the fresh Trakt fetch replaces it seconds later. Without
       // this the rail sits empty while up to ~17 Trakt calls round-trip.
       const cwCacheKey = `arvio.web.cw.v2:${key}`;
+      const watchlistCacheKey = `arvio.web.watchlist.v1:${key}`;
       try {
         const cachedCw = loadStored<{ at: number; items: MediaItem[] } | null>(cwCacheKey, null);
         if (cachedCw?.items?.length && Date.now() - cachedCw.at < 24 * 60 * 60 * 1000) {
           setContinueWatching((current) => current.length ? current : cachedCw.items);
           setCategories((current) => current.length ? current : [{ id: "continue_watching", title: "Continue Watching", items: cachedCw.items }]);
+        }
+        // Same instant-paint for the watchlist grid — without this it sits blank
+        // until ~15 Trakt calls round-trip.
+        const cachedWatchlist = loadStored<{ at: number; items: MediaItem[] } | null>(watchlistCacheKey, null);
+        if (cachedWatchlist?.items?.length && Date.now() - cachedWatchlist.at < 24 * 60 * 60 * 1000) {
+          setWatchlist((current) => current.length ? current : cachedWatchlist.items);
         }
       } catch {
         // Cache read must never block the refresh.
@@ -584,7 +594,17 @@ export function AppProvider({
         if (cw.length) saveStored(cwCacheKey, { at: Date.now(), items: cw.slice(0, 20) });
       }
       const watchlistSource = traktRows.length ? traktRows.map(traktItemToMedia) : cloudWatchlistRows;
-      setWatchlist(await hydrateTraktItems(watchlistSource));
+      const hydratedWatchlist = await hydrateTraktItems(watchlistSource);
+      setWatchlist(hydratedWatchlist);
+      // Cache for instant paint next time (only when we actually got data, so a
+      // Trakt outage never overwrites a good cache with an empty list).
+      if (hydratedWatchlist.length) {
+        try {
+          saveStored(watchlistCacheKey, { at: Date.now(), items: hydratedWatchlist.slice(0, 60) });
+        } catch {
+          // Non-fatal.
+        }
+      }
       if (!traktOutage) {
         setCategories([
           ...(cw.length ? [{ id: "continue_watching", title: "Continue Watching", items: cw }] : [])
@@ -1122,6 +1142,64 @@ export function AppProvider({
     setTraktConnected(false);
   }, []);
 
+  // Watchlist list-source switcher. Returns the user's custom Trakt lists to
+  // populate the dropdown (built-in Watchlist/Collection are added by the UI).
+  const loadTraktLists = useCallback(async (): Promise<Array<{ id: string; name: string }>> => {
+    if (!traktClient.isConnected) return [];
+    const lists = await traktClient.userLists().catch(() => []);
+    return (lists as Array<Record<string, unknown>>)
+      .map((list) => {
+        const ids = (list.ids ?? {}) as Record<string, unknown>;
+        const id = String(ids.trakt ?? ids.slug ?? "");
+        const name = String(list.name ?? "").trim();
+        return id && name ? { id, name } : null;
+      })
+      .filter((v): v is { id: string; name: string } => Boolean(v));
+  }, []);
+
+  // Fetch + hydrate a chosen list source into MediaItems. `source` is one of:
+  // "watchlist", "collection", or "list:<id>".
+  const fetchTraktListItems = useCallback(async (source: string, cacheKey: string): Promise<MediaItem[]> => {
+    let rows: unknown[] = [];
+    if (source === "collection") {
+      const [movies, shows] = await Promise.all([
+        traktClient.collection("movies").catch(() => []),
+        traktClient.collection("shows").catch(() => [])
+      ]);
+      rows = [...(movies as unknown[]), ...(shows as unknown[])];
+    } else if (source.startsWith("list:")) {
+      rows = await traktClient.listItems(source.slice(5)).catch(() => []);
+    } else {
+      rows = await traktClient.watchlist().catch(() => []);
+    }
+    const hydrated = await hydrateTraktItems(rows.map(traktItemToMedia));
+    if (hydrated.length) {
+      try {
+        saveStored(cacheKey, { at: Date.now(), items: hydrated.slice(0, 200) });
+      } catch {
+        // non-fatal
+      }
+    }
+    return hydrated;
+  }, []);
+
+  // Returns cached items instantly (with a background refresh) when fresh, else
+  // fetches. Cached per-source for instant re-selection.
+  const loadTraktListItems = useCallback(async (source: string): Promise<MediaItem[]> => {
+    if (!traktClient.isConnected) return [];
+    const cacheKey = `arvio.web.traktlist.v1:${source}`;
+    try {
+      const cached = loadStored<{ at: number; items: MediaItem[] } | null>(cacheKey, null);
+      if (cached?.items?.length && Date.now() - cached.at < 30 * 60 * 1000) {
+        void fetchTraktListItems(source, cacheKey).catch(() => undefined);
+        return cached.items;
+      }
+    } catch {
+      // ignore cache errors
+    }
+    return fetchTraktListItems(source, cacheKey);
+  }, [fetchTraktListItems]);
+
   const persistProfiles = useCallback((next: Profile[], activeId: string | null) => {
     setProfiles(next);
     setActiveProfileId(activeId);
@@ -1226,7 +1304,9 @@ export function AppProvider({
     signOut,
     beginTrakt,
     pollTrakt,
-    disconnectTrakt
+    disconnectTrakt,
+    loadTraktLists,
+    loadTraktListItems
   }), [
     view, cloudLoginRequired, profiles, activeProfile, avatarImages, manageMode,
     selectProfile, createProfile, updateProfileAction, deleteProfileAction, switchProfile, goToLogin, backToProfiles,
@@ -1234,7 +1314,8 @@ export function AppProvider({
     addons, iptvSnapshot, query, results, settings, auth, traktConnected, deviceCode, busy, toast,
     updateSettings, refreshData, openDetails, closeDetails, playStream, playTrailer, playChannel, playCatchup, closePlayer,
     refreshIptv, loadIptvGuide,
-    installAddon, removeAddon, setAddonsState, signIn, signOut, beginTrakt, pollTrakt, disconnectTrakt
+    installAddon, removeAddon, setAddonsState, signIn, signOut, beginTrakt, pollTrakt, disconnectTrakt,
+    loadTraktLists, loadTraktListItems
   ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

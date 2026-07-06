@@ -91,6 +91,33 @@ export class TraktClient {
     });
   }
 
+  // The user's personal collection (owned/available items).
+  async collection(type: "movies" | "shows") {
+    if (!this.token) return [];
+    await this.refreshIfNeeded();
+    return this.trakt<unknown[]>(`/sync/collection/${type}`, {
+      headers: { "x-user-token": this.token.access_token }
+    });
+  }
+
+  // Custom Trakt lists owned by the user: [{ ids: { trakt, slug }, name, ... }].
+  async userLists() {
+    if (!this.token) return [];
+    await this.refreshIfNeeded();
+    return this.trakt<unknown[]>("/users/me/lists", {
+      headers: { "x-user-token": this.token.access_token }
+    });
+  }
+
+  // Items in a specific custom list (movies + shows).
+  async listItems(listId: string | number) {
+    if (!this.token) return [];
+    await this.refreshIfNeeded();
+    return this.trakt<unknown[]>(`/users/me/lists/${listId}/items/movies,shows`, {
+      headers: { "x-user-token": this.token.access_token }
+    });
+  }
+
   async playback() {
     if (!this.token) return [];
     await this.refreshIfNeeded();

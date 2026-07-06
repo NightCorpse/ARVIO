@@ -708,3 +708,81 @@ function dedupeSources(sources: StreamSource[]): StreamSource[] {
     return true;
   });
 }
+
+// ── Browsable libraries (for the watchlist list-source selector) ─────────────
+
+export interface HomeServerLibraryOption {
+  // Encoded source id: "hslib:<serverId>:<libraryKey>". The UI passes it back
+  // to loadHomeServerLibraryItems.
+  value: string;
+  label: string;
+}
+
+// List each enabled server's movie/show libraries as selectable options.
+export async function listHomeServerLibraries(
+  servers: HomeServerConfig[]
+): Promise<HomeServerLibraryOption[]> {
+  const active = usableServers(servers);
+  const perServer = await Promise.all(active.map(async (server) => {
+    try {
+      if (server.type === "plex") {
+        const base = trimUrl(server.url);
+        const token = server.token ?? "";
+        const res = await proxiedGet<{ MediaContainer?: { Directory?: PlexSection[] } }>(
+          `${base}/library/sections?X-Plex-Token=${encodeURIComponent(token)}`,
+          { Accept: "application/json", "X-Plex-Token": token }
+        );
+        return (res?.MediaContainer?.Directory ?? [])
+          .filter((s) => s.type === "movie" || s.type === "show")
+          .map((s) => ({ value: `hslib:${server.id}:${s.key}`, label: `${server.name} · ${s.title}` }));
+      }
+      const session = await ensureSession(server);
+      if (!session) return [];
+      const base = trimUrl(server.url);
+      const views = await proxiedGet<{ Items?: Array<{ Id: string; Name: string; CollectionType?: string }> }>(
+        `${base}/Users/${session.userId}/Views?api_key=${session.token}`
+      );
+      return (views.Items ?? [])
+        .filter((v) => v.CollectionType === "movies" || v.CollectionType === "tvshows")
+        .map((v) => ({ value: `hslib:${server.id}:${v.Id}`, label: `${server.name} · ${v.Name}` }));
+    } catch {
+      return [];
+    }
+  }));
+  return perServer.flat();
+}
+
+// Load the items of a chosen library (recently-added first) as MediaItems.
+export async function loadHomeServerLibraryItems(
+  servers: HomeServerConfig[],
+  source: string,
+  limit = 60
+): Promise<MediaItem[]> {
+  const match = source.match(/^hslib:([^:]+):(.+)$/);
+  if (!match) return [];
+  const [, serverId, libraryKey] = match;
+  const server = servers.find((s) => s.id === serverId && s.enabled && s.url);
+  if (!server) return [];
+  try {
+    if (server.type === "plex") {
+      const base = trimUrl(server.url);
+      const token = server.token ?? "";
+      const res = await proxiedGet<{ MediaContainer?: { Metadata?: PlexItem[] } }>(
+        `${base}/library/sections/${libraryKey}/all?X-Plex-Token=${encodeURIComponent(token)}&sort=addedAt:desc&X-Plex-Container-Start=0&X-Plex-Container-Size=${limit}`,
+        { Accept: "application/json", "X-Plex-Token": token }
+      );
+      return (res?.MediaContainer?.Metadata ?? [])
+        .map((item) => mapPlexItem(base, token, item))
+        .filter((m) => m.image || m.backdrop);
+    }
+    const session = await ensureSession(server);
+    if (!session) return [];
+    const base = trimUrl(server.url);
+    const items = await proxiedGet<{ Items?: JellyfinItem[] }>(
+      `${base}/Users/${session.userId}/Items?ParentId=${libraryKey}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=DateCreated&SortOrder=Descending&Limit=${limit}&Fields=Overview&api_key=${session.token}`
+    );
+    return (items.Items ?? []).map((item) => mapItem(base, session.token, item)).filter((m) => m.image || m.backdrop);
+  } catch {
+    return [];
+  }
+}
