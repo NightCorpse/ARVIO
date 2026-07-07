@@ -740,7 +740,8 @@ const SEASON_EPISODE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
 
 export async function getSeasonEpisodes(tvId: number, seasonNumber: number, language = "en-US"): Promise<EpisodeInfo[]> {
   const key = `${tvId}:${seasonNumber}:${language}`;
-  if (seasonCache.has(key)) return seasonCache.get(key)!;
+  const memo = seasonCache.get(key);
+  if (memo?.length) return memo;
   const cached = readSeasonEpisodesCache(key);
   if (cached) {
     seasonCache.set(key, cached);
@@ -767,8 +768,13 @@ export async function getSeasonEpisodes(tvId: number, seasonNumber: number, lang
       airDate: episode.air_date ?? "",
       runtime: episode.runtime ?? 0
     }));
-    seasonCache.set(key, episodes);
-    writeSeasonEpisodesCache(key, episodes);
+    // NEVER cache an empty result: a transient failure (429/timeout) or a
+    // response that momentarily lacks episodes would otherwise get pinned as
+    // "No episodes found" until the TTL expires, even after the API recovers.
+    if (episodes.length) {
+      seasonCache.set(key, episodes);
+      writeSeasonEpisodesCache(key, episodes);
+    }
     return episodes;
   } catch {
     return [];
@@ -779,7 +785,9 @@ function readSeasonEpisodesCache(key: string) {
   const cache = loadStored<Record<string, { at: number; episodes: EpisodeInfo[] }>>(SEASON_EPISODE_CACHE_KEY, {});
   const entry = cache[key];
   if (!entry || Date.now() - entry.at > SEASON_EPISODE_CACHE_TTL) return null;
-  return Array.isArray(entry.episodes) ? entry.episodes : null;
+  // Treat a cached empty array as a miss so a previously-poisoned entry (from an
+  // old build that cached failures) re-fetches instead of showing no episodes.
+  return Array.isArray(entry.episodes) && entry.episodes.length ? entry.episodes : null;
 }
 
 function writeSeasonEpisodesCache(key: string, episodes: EpisodeInfo[]) {

@@ -1858,27 +1858,28 @@ input:focus {
 /* Watched green check badge */
 /* Watched: solid green circle with a clear white checkmark, top-right of the
    artwork (matches the Android app). */
-.watched-badge {
+.media-card .watched-badge {
   position: absolute;
-  right: 7px;
-  top: 7px;
+  right: 8px;
+  top: 8px;
   bottom: auto;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   display: grid;
   place-items: center;
-  color: #2fe6a7;
-  background: rgba(10, 20, 16, 0.62);
-  box-shadow: 0 0 16px rgba(0, 213, 136, 0.28);
-  backdrop-filter: blur(2px);
+  /* Full-strength white — a lower-specificity .media-card span rule was dimming
+     it to 76% opacity. */
+  color: #ffffff !important;
+  background: rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
   z-index: 3;
 }
 
 .watched-badge svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2.2;
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.4;
 }
 
 .detail-title-line {
