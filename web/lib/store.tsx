@@ -381,10 +381,21 @@ export function AppProvider({
   cloudLoginRequired?: boolean;
 }) {
   const [section, setSection] = useState<NavSection>("home");
-  const [categories, setCategories] = useState<Category[]>([]);
+  // Seed Continue Watching synchronously from the last-known list for the active
+  // profile so the rail is on screen the instant the home screen first renders —
+  // without this it stays blank until the ~120-call Trakt up-next fetch returns,
+  // and only appeared after a navigation round-trip remounted the screen.
+  const initialCw = (() => {
+    const pid = loadStored<string | null>(ACTIVE_PROFILE_KEY, null) ?? "no-profile";
+    const cached = loadStored<{ at: number; items: MediaItem[] } | null>(`arvio.web.cw.v2:${pid}`, null);
+    return cached?.items?.length && Date.now() - cached.at < 24 * 60 * 60 * 1000 ? cached.items : [];
+  })();
+  const [categories, setCategories] = useState<Category[]>(
+    initialCw.length ? [{ id: "continue_watching", title: "Continue Watching", items: initialCw }] : []
+  );
   const [catalogConfigs, setCatalogConfigs] = useState<CatalogConfig[]>([]);
   const [homeServerRows, setHomeServerRows] = useState<Category[]>([]);
-  const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
+  const [continueWatching, setContinueWatching] = useState<MediaItem[]>(initialCw);
   const [watchlist, setWatchlist] = useState<MediaItem[]>([]);
   const [watchedKeys, setWatchedKeys] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<MediaItem | null>(null);
@@ -616,13 +627,21 @@ export function AppProvider({
       // showing the cached rail instead of wiping it with an empty list.
       const traktOutage = traktReady && !cw.length &&
         !playbackRows.length && !watchedShowsRows.length && !watchedMoviesRows.length && !traktRows.length;
-      // Enriched CW (adds Trakt up-next episodes) replaces the fast paint.
+      // Enriched CW (adds Trakt up-next episodes) replaces the fast paint. When
+      // the fresh list is non-empty we swap it in; when it's empty we keep the
+      // seeded/cached rail rather than wiping to blank — a genuinely-empty CW is
+      // rare and the 24h cache expiry cleans it up, but a transient empty result
+      // must never flash the rail away after we already painted it.
       if (!traktOutage) {
-        setContinueWatching(cw);
-        if (cw.length) saveStored(cwCacheKey, { at: Date.now(), items: cw.slice(0, 20) });
-        setCategories([
-          ...(cw.length ? [{ id: "continue_watching", title: "Continue Watching", items: cw }] : [])
-        ]);
+        const cwRail = { id: "continue_watching", title: "Continue Watching", items: cw };
+        if (cw.length) {
+          setContinueWatching(cw);
+          saveStored(cwCacheKey, { at: Date.now(), items: cw.slice(0, 20) });
+          setCategories((current) => {
+            const others = current.filter((c) => c.id !== "continue_watching");
+            return [cwRail, ...others];
+          });
+        }
       }
       // Refresh the watchlist with the authoritative Trakt list if it differs.
       const watchlistSource = traktRows.length ? traktRows.map(traktItemToMedia) : cloudWatchlistRows;

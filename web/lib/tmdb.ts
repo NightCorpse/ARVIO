@@ -660,14 +660,15 @@ function persistProviderCache() {
 
 // Per-card runtime (minutes), cached + persisted. List responses omit runtime,
 // so cards fetch it lazily when needed.
-const CARD_META_KEY = "arvio.web.cardMeta.v1";
-const cardMetaCache = new Map<string, { runtime: number }>();
+type CardMeta = { runtime: number; image?: string; backdrop?: string | null };
+const CARD_META_KEY = "arvio.web.cardMeta.v2";
+const cardMetaCache = new Map<string, CardMeta>();
 
 function restoreCardMetaCache() {
   if (cardMetaCache.size || typeof window === "undefined") return;
   try {
     const raw = window.localStorage.getItem(CARD_META_KEY);
-    if (raw) Object.entries(JSON.parse(raw) as Record<string, { runtime: number }>).forEach(([k, v]) => cardMetaCache.set(k, v));
+    if (raw) Object.entries(JSON.parse(raw) as Record<string, CardMeta>).forEach(([k, v]) => cardMetaCache.set(k, v));
   } catch { /* ignore */ }
 }
 
@@ -683,20 +684,28 @@ function persistCardMetaCache() {
   }, 800);
 }
 
-export async function getCardMeta(item: { mediaType: MediaType; id: number }): Promise<{ runtime: number }> {
+export async function getCardMeta(item: { mediaType: MediaType; id: number }): Promise<{ runtime: number; image: string; backdrop: string | null }> {
   const key = `${item.mediaType}:${item.id}`;
   restoreCardMetaCache();
   const cached = cardMetaCache.get(key);
-  if (cached) return cached;
+  // Older cache entries only stored runtime; treat a missing `image` field as a
+  // miss so the card can back-fill its artwork (fixes grey CW thumbnails).
+  if (cached && "image" in cached) {
+    return { runtime: cached.runtime, image: cached.image ?? "", backdrop: cached.backdrop ?? null };
+  }
   try {
-    const payload = await tmdb<{ runtime?: number; episode_run_time?: number[] }>(`${item.mediaType}/${item.id}`, {});
+    const payload = await tmdb<{ runtime?: number; episode_run_time?: number[]; poster_path?: string | null; backdrop_path?: string | null }>(`${item.mediaType}/${item.id}`, {});
     const runtime = payload.runtime ?? payload.episode_run_time?.[0] ?? 0;
-    const meta = { runtime };
+    const meta = {
+      runtime,
+      image: tmdbImageUrl(config.imageBase, payload.poster_path),
+      backdrop: tmdbImageUrl(config.backdropBase, payload.backdrop_path) || null
+    };
     cardMetaCache.set(key, meta);
     persistCardMetaCache();
     return meta;
   } catch {
-    const meta = { runtime: 0 };
+    const meta = { runtime: 0, image: "", backdrop: null };
     cardMetaCache.set(key, meta);
     return meta;
   }

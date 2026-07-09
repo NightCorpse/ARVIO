@@ -47,7 +47,13 @@ function MediaCardBase({ item, onOpen, onFocus, posterMode }: {
   const progress = item.progress ?? 0;
   const watched = isWatched(item);
   const showProgress = !watched && progress >= 1 && progress <= 94;
-  const artwork = effectivePosterMode ? (item.image || item.backdrop) : (item.backdrop || item.image);
+  // CW/up-next items from Trakt arrive with no artwork, and a hydration that hit
+  // a network/429 error leaves image+backdrop empty — the card renders grey while
+  // the (separately cached) logo shows. Back-fill artwork lazily from TMDB.
+  const [fallbackArt, setFallbackArt] = useState<{ image: string; backdrop: string | null } | null>(null);
+  const image = item.image || fallbackArt?.image || "";
+  const backdrop = item.backdrop || fallbackArt?.backdrop || "";
+  const artwork = effectivePosterMode ? (image || backdrop) : (backdrop || image);
   const year = item.releaseDate?.slice(0, 4) || item.year || (item.mediaType === "tv" ? "Series" : "Movie");
 
   // Rails load lazily, so a card only mounts when its row is near the viewport —
@@ -75,18 +81,26 @@ function MediaCardBase({ item, onOpen, onFocus, posterMode }: {
     return () => { active = false; };
   }, [item.id, item.mediaType, item.isHomeServer]);
 
-  // Runtime for the meta line — list responses rarely include it, so fetch it
-  // lazily (cached + persisted) when the item lacks a duration.
+  // Runtime for the meta line (list responses rarely include it) and a poster/
+  // backdrop back-fill for cards that arrived without artwork — both come from
+  // the same cached TMDB call, so fetch when either is missing.
   const [runtime, setRuntime] = useState<number | null>(null);
+  const missingArtwork = !item.image && !item.backdrop;
   useEffect(() => {
     setRuntime(null);
-    if (item.id <= 0 || item.isHomeServer || item.duration) return undefined;
+    setFallbackArt(null);
+    if (item.id <= 0 || item.isHomeServer) return undefined;
+    if (item.duration && !missingArtwork) return undefined;
     let active = true;
     void getCardMeta({ mediaType: item.mediaType, id: item.id }).then((meta) => {
-      if (active && meta.runtime) setRuntime(meta.runtime);
+      if (!active) return;
+      if (meta.runtime) setRuntime(meta.runtime);
+      if (missingArtwork && (meta.image || meta.backdrop)) {
+        setFallbackArt({ image: meta.image, backdrop: meta.backdrop });
+      }
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [item.id, item.mediaType, item.isHomeServer, item.duration]);
+  }, [item.id, item.mediaType, item.isHomeServer, item.duration, missingArtwork]);
 
   const dateLabel = formatReleaseDate(item.releaseDate) || item.subtitle || year;
   const runtimeLabel = formatRuntime(item.duration || runtime);
