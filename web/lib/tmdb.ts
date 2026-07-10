@@ -118,7 +118,22 @@ async function tmdb<T>(path: string, params: Record<string, string | number | un
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
   });
-  return jsonRequest<T>(url.toString());
+  // Timeout + one retry. Callers swallow failures and render partial UI (a
+  // details page without seasons/cast, "No episodes found"), so a single
+  // dropped request during the startup burst must not be terminal — and a
+  // request with no timeout must not hang a screen forever.
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await jsonRequest<T>(url.toString(), {
+        signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(12_000) : undefined
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+  throw lastError;
 }
 
 export async function loadHomeCategories(language = "en-US", catalogs?: CatalogConfig[]): Promise<Category[]> {
@@ -757,14 +772,27 @@ export async function getSeasonEpisodes(tvId: number, seasonNumber: number, lang
     return cached;
   }
   try {
-    const [season, externalIds] = await Promise.all([
-      tmdb<{ episodes?: Array<{ id: number; episode_number: number; name?: string; overview?: string; still_path?: string | null; vote_average?: number; air_date?: string; runtime?: number }> }>(
-        `tv/${tvId}/season/${seasonNumber}`,
-        { language }
-      ),
-      tmdb<{ imdb_id?: string | null }>(`tv/${tvId}/external_ids`).catch(() => null)
+    // IMDb episode ratings (external_ids + cinemeta) run in parallel but are
+    // capped at 2.5s — they are cosmetic and must never hold up the episode
+    // list (the cinemeta proxy call has no timeout and can hang for a long time).
+    const ratingsPromise: Promise<Map<string, string>> = (async () => {
+      const externalIds = await tmdb<{ imdb_id?: string | null }>(`tv/${tvId}/external_ids`).catch(() => null);
+      if (!externalIds?.imdb_id) return new Map<string, string>();
+      return getSeriesEpisodeRatings(externalIds.imdb_id).catch(() => new Map<string, string>());
+    })();
+    ratingsPromise.catch(() => undefined);
+    const season = await tmdb<{ episodes?: Array<{ id: number; episode_number: number; name?: string; overview?: string; still_path?: string | null; vote_average?: number; air_date?: string; runtime?: number }> }>(
+      `tv/${tvId}/season/${seasonNumber}`,
+      { language }
+    );
+    let ratingsTimedOut = false;
+    const imdbRatings = await Promise.race([
+      ratingsPromise,
+      new Promise<Map<string, string>>((resolve) => setTimeout(() => {
+        ratingsTimedOut = true;
+        resolve(new Map());
+      }, 2500))
     ]);
-    const imdbRatings = externalIds?.imdb_id ? await getSeriesEpisodeRatings(externalIds.imdb_id).catch(() => new Map<string, string>()) : new Map<string, string>();
     const episodes = (season.episodes ?? []).map((episode) => ({
       id: episode.id,
       episodeNumber: episode.episode_number,
@@ -782,7 +810,9 @@ export async function getSeasonEpisodes(tvId: number, seasonNumber: number, lang
     // "No episodes found" until the TTL expires, even after the API recovers.
     if (episodes.length) {
       seasonCache.set(key, episodes);
-      writeSeasonEpisodesCache(key, episodes);
+      // A ratings timeout only skips the 7-day persistent cache — the next
+      // session then refetches with ratings instead of pinning them missing.
+      if (!ratingsTimedOut) writeSeasonEpisodesCache(key, episodes);
     }
     return episodes;
   } catch {

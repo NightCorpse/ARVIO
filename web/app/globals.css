@@ -894,6 +894,21 @@ input:focus {
   color: var(--muted);
 }
 
+.episode-retry {
+  background: none;
+  border: 1px solid var(--muted);
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 12px;
+}
+
+.episode-retry:hover {
+  border-color: var(--accent, #ededed);
+  color: var(--accent, #ededed);
+}
+
 .player-overlay {
   position: fixed;
   inset: 0;

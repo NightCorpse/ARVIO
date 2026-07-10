@@ -12,7 +12,7 @@ import { streamPlayability } from "./streamCompatibility";
 import { loadHomeServerRows } from "./homeserver";
 import { buildXtreamCatchupUrl, loadIptvGuideForChannels, loadIptvSnapshot, loadPlaylists, savePlaylists } from "./iptv";
 import { dedupeMedia, historyToItem, hydrateTraktItems, traktItemToMedia, traktPlaybackToMedia, traktUpNextToMedia } from "./mappers";
-import { loadStored, saveStored } from "./storage";
+import { loadStored, removeStored, saveStored } from "./storage";
 import { getDetails, loadCatalog, searchMedia } from "./tmdb";
 import { TraktClient, type TraktDeviceCode } from "./trakt";
 import type {
@@ -38,6 +38,25 @@ const settingsKey = "arvio.web.settings";
 const PROFILES_KEY = "arvio.web.profiles";
 const ACTIVE_PROFILE_KEY = "arvio.web.activeProfileId";
 const AVATAR_IMAGES_KEY = "arvio.web.avatarImages";
+
+// Instant-paint caches for Continue Watching / Watchlist. The TTL is deliberately
+// long: a stale list is strictly better than a blank rail (the fresh fetch
+// replaces it seconds later). The old 24h TTL left the rail blank on the first
+// open of the day whenever the previous enriched refresh was more than a day ago.
+const LIST_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function cwCacheKeyFor(profileId: string | null | undefined) {
+  return `arvio.web.cw.v2:${profileId ?? "no-profile"}`;
+}
+
+function watchlistCacheKeyFor(profileId: string | null | undefined) {
+  return `arvio.web.watchlist.v1:${profileId ?? "no-profile"}`;
+}
+
+function readCachedList(key: string): MediaItem[] {
+  const cached = loadStored<{ at: number; items: MediaItem[] } | null>(key, null);
+  return cached?.items?.length && Date.now() - cached.at < LIST_CACHE_TTL_MS ? cached.items : [];
+}
 
 export type AppView = "profiles" | "login" | "app";
 
@@ -221,6 +240,10 @@ async function loadTraktUpNext(watchedShowsRows: unknown[], includeSpecials: boo
     .slice(0, 120);
   const results: Array<MediaItem | null> = new Array(watchedShows.length).fill(null);
   let cursor = 0;
+  // Distinguishes "progress fetch failed" (rate-limited/blocked) from "show has
+  // no next episode" — an empty result with failures present is a partial
+  // outage, not an empty Continue Watching.
+  let fetchFailures = 0;
   const workers = Array.from({ length: Math.min(8, watchedShows.length) }, async () => {
     while (cursor < watchedShows.length) {
       const index = cursor;
@@ -239,15 +262,18 @@ async function loadTraktUpNext(watchedShowsRows: unknown[], includeSpecials: boo
             const oldest = showProgressCache.keys().next().value;
             if (oldest) showProgressCache.delete(oldest);
           }
+        } else {
+          fetchFailures += 1;
         }
       }
       results[index] = traktUpNextToMedia(watched, progress);
     }
   });
   await Promise.all(workers);
-  return results
+  const items = results
     .filter((item): item is MediaItem => Boolean(item))
     .filter((item) => includeSpecials || item.seasonNumber !== 0);
+  return { items, fetchFailures };
 }
 
 function mergeTraktWithLocalResume(traktItems: MediaItem[], localItems: MediaItem[]) {
@@ -271,18 +297,30 @@ function mergeTraktWithLocalResume(traktItems: MediaItem[], localItems: MediaIte
 }
 
 async function hydrateContinueWatchingItems(items: MediaItem[]) {
-  const hydrated = await Promise.all(items.slice(0, 50).map(async (item) => {
-    const details = await getDetails(item).catch(() => item);
-    return {
-      ...details,
-      ...item,
-      image: item.image || details.image,
-      backdrop: item.backdrop || details.backdrop,
-      overview: details.overview || item.overview,
-      rating: details.rating || item.rating,
-      duration: details.duration || item.duration
-    };
-  }));
+  // Throttled pool (not one big Promise.all): 50 parallel TMDB calls at startup
+  // starved user-initiated fetches (opening a details page mid-boot timed out
+  // and rendered without seasons/cast).
+  const source = items.slice(0, 50);
+  const hydrated: MediaItem[] = new Array(source.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(10, source.length) }, async () => {
+    while (cursor < source.length) {
+      const index = cursor;
+      cursor += 1;
+      const item = source[index];
+      const details = await getDetails(item).catch(() => item);
+      hydrated[index] = {
+        ...details,
+        ...item,
+        image: item.image || details.image,
+        backdrop: item.backdrop || details.backdrop,
+        overview: details.overview || item.overview,
+        rating: details.rating || item.rating,
+        duration: details.duration || item.duration
+      };
+    }
+  });
+  await Promise.all(workers);
   return hydrated;
 }
 
@@ -381,22 +419,27 @@ export function AppProvider({
   cloudLoginRequired?: boolean;
 }) {
   const [section, setSection] = useState<NavSection>("home");
-  // Seed Continue Watching synchronously from the last-known list for the active
-  // profile so the rail is on screen the instant the home screen first renders —
-  // without this it stays blank until the ~120-call Trakt up-next fetch returns,
+  // Seed Continue Watching + Watchlist synchronously from the last-known lists
+  // for the active profile so both are on screen the instant the app renders —
+  // without this CW stays blank until the ~120-call Trakt up-next fetch returns,
   // and only appeared after a navigation round-trip remounted the screen.
-  const initialCw = (() => {
-    const pid = loadStored<string | null>(ACTIVE_PROFILE_KEY, null) ?? "no-profile";
-    const cached = loadStored<{ at: number; items: MediaItem[] } | null>(`arvio.web.cw.v2:${pid}`, null);
-    return cached?.items?.length && Date.now() - cached.at < 24 * 60 * 60 * 1000 ? cached.items : [];
-  })();
+  const initialProfileId = loadStored<string | null>(ACTIVE_PROFILE_KEY, null);
+  const initialCw = readCachedList(cwCacheKeyFor(initialProfileId));
+  const initialWatchlist = readCachedList(watchlistCacheKeyFor(initialProfileId));
   const [categories, setCategories] = useState<Category[]>(
     initialCw.length ? [{ id: "continue_watching", title: "Continue Watching", items: initialCw }] : []
   );
   const [catalogConfigs, setCatalogConfigs] = useState<CatalogConfig[]>([]);
   const [homeServerRows, setHomeServerRows] = useState<Category[]>([]);
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>(initialCw);
-  const [watchlist, setWatchlist] = useState<MediaItem[]>([]);
+  const [watchlist, setWatchlist] = useState<MediaItem[]>(initialWatchlist);
+  // Where the on-screen CW list came from, so later paints know whether they may
+  // replace it: cache seed < fast paint (playback-only) < fresh enriched list.
+  const cwSourceRef = useRef<"none" | "seed" | "fast" | "fresh">(initialCw.length ? "seed" : "none");
+  // The profile key of the LATEST refresh request. In-flight refreshes for a
+  // previous profile check this before writing state, so switching profiles can
+  // never end with the old profile's rows landing after the new profile's.
+  const refreshKeyRef = useRef<string | null>(null);
   const [watchedKeys, setWatchedKeys] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<MediaItem | null>(null);
   const [streams, setStreams] = useState<StreamSource[]>([]);
@@ -485,6 +528,7 @@ export function AppProvider({
   const refreshData = useCallback((profileIdOverride?: string | null) => {
     const profileId = profileIdOverride ?? activeProfileId;
     const key = profileId ?? "no-profile";
+    refreshKeyRef.current = key;
     const existing = refreshInFlightRef.current;
     if (existing?.key === key) return existing.promise;
     const run = (async () => {
@@ -493,19 +537,22 @@ export function AppProvider({
       // Paint Continue Watching instantly from the last known list for this
       // profile — the fresh Trakt fetch replaces it seconds later. Without
       // this the rail sits empty while up to ~17 Trakt calls round-trip.
-      const cwCacheKey = `arvio.web.cw.v2:${key}`;
-      const watchlistCacheKey = `arvio.web.watchlist.v1:${key}`;
+      const cwCacheKey = cwCacheKeyFor(profileId);
+      const watchlistCacheKey = watchlistCacheKeyFor(profileId);
       try {
-        const cachedCw = loadStored<{ at: number; items: MediaItem[] } | null>(cwCacheKey, null);
-        if (cachedCw?.items?.length && Date.now() - cachedCw.at < 24 * 60 * 60 * 1000) {
-          setContinueWatching((current) => current.length ? current : cachedCw.items);
-          setCategories((current) => current.length ? current : [{ id: "continue_watching", title: "Continue Watching", items: cachedCw.items }]);
+        const cachedCw = readCachedList(cwCacheKey);
+        if (cachedCw.length && cwSourceRef.current === "none") {
+          cwSourceRef.current = "seed";
+          setContinueWatching(cachedCw);
+          setCategories((current) => current.some((c) => c.id === "continue_watching")
+            ? current
+            : [{ id: "continue_watching", title: "Continue Watching", items: cachedCw }, ...current]);
         }
         // Same instant-paint for the watchlist grid — without this it sits blank
         // until ~15 Trakt calls round-trip.
-        const cachedWatchlist = loadStored<{ at: number; items: MediaItem[] } | null>(watchlistCacheKey, null);
-        if (cachedWatchlist?.items?.length && Date.now() - cachedWatchlist.at < 24 * 60 * 60 * 1000) {
-          setWatchlist((current) => current.length ? current : cachedWatchlist.items);
+        const cachedWatchlist = readCachedList(watchlistCacheKey);
+        if (cachedWatchlist.length) {
+          setWatchlist((current) => current.length ? current : cachedWatchlist);
         }
       } catch {
         // Cache read must never block the refresh.
@@ -591,7 +638,7 @@ export function AppProvider({
       const fastWatchlistSource = traktRows.length ? traktRows.map(traktItemToMedia) : cloudWatchlistRows;
       if (fastWatchlistSource.length) {
         void hydrateTraktItems(fastWatchlistSource).then((hydrated) => {
-          if (hydrated.length) {
+          if (hydrated.length && refreshKeyRef.current === key) {
             setWatchlist((current) => current.length ? current : hydrated);
             try { saveStored(watchlistCacheKey, { at: Date.now(), items: hydrated.slice(0, 60) }); } catch { /* non-fatal */ }
           }
@@ -600,7 +647,12 @@ export function AppProvider({
       const fastCw = dedupeMedia([...traktPlaybackCw, ...cloudCw]).sort((a, b) => (b.activityAt ?? 0) - (a.activityAt ?? 0));
       if (fastCw.length) {
         void hydrateContinueWatchingItems(fastCw).then((hydrated) => {
-          setContinueWatching((current) => current.length ? current : hydrated);
+          // Only fill an empty rail: replacing a seeded cache list with this
+          // playback-only list would visibly shrink the rail for a few seconds
+          // until the enriched list lands.
+          if (refreshKeyRef.current !== key || cwSourceRef.current !== "none") return;
+          cwSourceRef.current = "fast";
+          setContinueWatching(hydrated);
           setCategories((current) => current.some((c) => c.id === "continue_watching")
             ? current
             : [{ id: "continue_watching", title: "Continue Watching", items: hydrated }, ...current]);
@@ -608,14 +660,17 @@ export function AppProvider({
       }
       // ───────────────────────────────────────────────────────────────────────
 
-      const upNextRows = traktReady ? await loadTraktUpNext(watchedShowsRows, effectiveSettings.includeSpecials).catch(() => []) : [];
+      const upNext = traktReady
+        ? await loadTraktUpNext(watchedShowsRows, effectiveSettings.includeSpecials).catch(() => ({ items: [] as MediaItem[], fetchFailures: 1 }))
+        : { items: [] as MediaItem[], fetchFailures: 0 };
+      const upNextRows = upNext.items;
       const playbackShowKeys = new Set(traktPlaybackCw.filter((item) => item.mediaType === "tv").map((item) => `${item.mediaType}:${item.id}`));
       const traktCw = mergeTraktWithLocalResume([
         ...traktPlaybackCw,
         ...upNextRows.filter((item) => !playbackShowKeys.has(`${item.mediaType}:${item.id}`))
       ], cloudCw);
       const watchedKeys = traktWatchedKeys(watchedMoviesRows, watchedShowsRows);
-      setWatchedKeys(watchedKeys);
+      if (refreshKeyRef.current === key) setWatchedKeys(watchedKeys);
       const cwBase = traktReady ? traktCw : cloudCw.filter(isPausedPlaybackItem);
       // Order newest-activity-first across playback + up-next (matches the app's
       // updatedAt-descending sort) so the row leads with what you last watched.
@@ -628,25 +683,33 @@ export function AppProvider({
       const traktOutage = traktReady && !cw.length &&
         !playbackRows.length && !watchedShowsRows.length && !watchedMoviesRows.length && !traktRows.length;
       // Enriched CW (adds Trakt up-next episodes) replaces the fast paint. When
-      // the fresh list is non-empty we swap it in; when it's empty we keep the
-      // seeded/cached rail rather than wiping to blank — a genuinely-empty CW is
-      // rare and the 24h cache expiry cleans it up, but a transient empty result
-      // must never flash the rail away after we already painted it.
-      if (!traktOutage) {
-        const cwRail = { id: "continue_watching", title: "Continue Watching", items: cw };
+      // the fresh list is non-empty we swap it in. An empty result with Trakt
+      // connected and reads healthy means the rail is GENUINELY empty — clear it
+      // and its cache so a finished library can't resurrect a stale rail. During
+      // an outage (all reads empty) we keep whatever is painted.
+      if (!traktOutage && refreshKeyRef.current === key) {
         if (cw.length) {
+          cwSourceRef.current = "fresh";
           setContinueWatching(cw);
           saveStored(cwCacheKey, { at: Date.now(), items: cw.slice(0, 20) });
           setCategories((current) => {
             const others = current.filter((c) => c.id !== "continue_watching");
-            return [cwRail, ...others];
+            return [{ id: "continue_watching", title: "Continue Watching", items: cw }, ...others];
           });
+        } else if (traktReady && upNext.fetchFailures === 0) {
+          // Only clear on a CLEAN pass: any per-show progress failure means this
+          // empty result could be a partial outage, and wiping the cache would
+          // recreate the blank-rail-on-startup bug the seed exists to prevent.
+          cwSourceRef.current = "fresh";
+          setContinueWatching([]);
+          setCategories((current) => current.filter((c) => c.id !== "continue_watching"));
+          removeStored(cwCacheKey);
         }
       }
       // Refresh the watchlist with the authoritative Trakt list if it differs.
       const watchlistSource = traktRows.length ? traktRows.map(traktItemToMedia) : cloudWatchlistRows;
       const hydratedWatchlist = await hydrateTraktItems(watchlistSource);
-      if (hydratedWatchlist.length) {
+      if (hydratedWatchlist.length && refreshKeyRef.current === key) {
         setWatchlist(hydratedWatchlist);
         try {
           saveStored(watchlistCacheKey, { at: Date.now(), items: hydratedWatchlist.slice(0, 60) });
@@ -719,7 +782,10 @@ export function AppProvider({
   }, [iptvSnapshot.nowNext]);
 
   useEffect(() => {
-    if (view !== "app") return;
+    // Also runs on the profile-selection screen ("profiles" view): the last-used
+    // profile is almost always the one picked, so Continue Watching and the
+    // rails are already loading (or loaded) by the time Home first mounts.
+    if (view === "login") return;
     if (authClient.session && !cloudProfilesHydrated) return;
     void refreshData();
   }, [cloudProfilesHydrated, refreshData, view]);
@@ -1080,17 +1146,38 @@ export function AppProvider({
     }
   }, [setToast]);
 
+  // Hand a live/catch-up stream to VLC/Infuse. Most IPTV is plain-HTTP (mixed
+  // content in a secure page) and many providers block anything but a real
+  // player, so an external player is the reliable path — it plays from the
+  // user's own connection with no browser restrictions, at zero server cost.
+  // Returns true when the handoff fired (so the caller skips the browser player).
+  const openLiveExternally = useCallback((stream: StreamSource, title: string): boolean => {
+    const player = settingsRef.current.defaultPlayer;
+    if (player !== "vlc" && player !== "infuse") return false;
+    setToast(
+      player === "infuse"
+        ? "Opening in Infuse..."
+        : externalLaunchMode("vlc") === "playlist"
+          ? "VLC playlist saved — open it from your downloads to play."
+          : "Opening in VLC..."
+    );
+    openExternalPlayer(player, stream, title, settingsRef.current.defaultSubtitle);
+    return true;
+  }, []);
+
   const playChannel = useCallback((channel: IptvChannel) => {
-    setActiveChannel(channel);
-    setActiveStream({
+    const stream: StreamSource = {
       source: channel.name,
       addonName: "Live TV",
       quality: "Live",
       size: "",
       url: channel.streamUrl,
       description: channel.group
-    });
-  }, []);
+    };
+    if (openLiveExternally(stream, channel.name)) return;
+    setActiveChannel(channel);
+    setActiveStream(stream);
+  }, [openLiveExternally]);
 
   // Catch-up plays a finished programme from the panel's archive. It is a
   // seekable VOD stream (no activeChannel → scrubber works), but the player
@@ -1101,16 +1188,19 @@ export function AppProvider({
       setToast("Catch-up is not available for this channel.");
       return;
     }
-    setActiveChannel(null);
-    setActiveStream({
-      source: `${channel.name} · ${program.title}`,
+    const title = `${channel.name} · ${program.title}`;
+    const stream: StreamSource = {
+      source: title,
       addonName: "Catch-up",
       quality: "Catch-up",
       size: "",
       url,
       description: channel.group
-    });
-  }, [setToast]);
+    };
+    if (openLiveExternally(stream, title)) return;
+    setActiveChannel(null);
+    setActiveStream(stream);
+  }, [setToast, openLiveExternally]);
 
   const closePlayer = useCallback(() => {
     setActiveStream(null);
@@ -1254,12 +1344,25 @@ export function AppProvider({
 
   const selectProfile = useCallback(async (profile: Profile) => {
     const updated = profiles.map((p) => (p.id === profile.id ? { ...p, lastUsedAt: Date.now() } : p));
+    const switching = profile.id !== activeProfileId;
     persistProfiles(updated, profile.id);
     setManageMode(false);
+    if (switching) {
+      // Drop the previous profile's rows and seed from the new profile's cache
+      // so its Continue Watching paints instantly. refreshKeyRef (updated by the
+      // refreshData call below) invalidates any in-flight refresh for the old
+      // profile before it can write its rows over these.
+      const seededCw = readCachedList(cwCacheKeyFor(profile.id));
+      cwSourceRef.current = seededCw.length ? "seed" : "none";
+      setContinueWatching(seededCw);
+      setCategories(seededCw.length ? [{ id: "continue_watching", title: "Continue Watching", items: seededCw }] : []);
+      setWatchlist(readCachedList(watchlistCacheKeyFor(profile.id)));
+      setWatchedKeys(new Set());
+    }
     setView("app");
     setSection("home");
     void refreshData(profile.id);
-  }, [profiles, persistProfiles, refreshData]);
+  }, [profiles, activeProfileId, persistProfiles, refreshData]);
 
   const createProfile = useCallback(async (name: string, avatarColor: number, avatarId: number) => {
     const profile = makeProfile(name || "Profile", avatarColor || randomProfileColor(), avatarId);

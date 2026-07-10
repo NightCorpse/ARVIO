@@ -58,14 +58,22 @@ function DetailsView({ item }: { item: MediaItem }) {
       return () => { active = false; };
     }
     setDetailsLoading(true);
-    void getDetails(item)
-      .then((details) => {
-        if (active) setDetailsItem(details);
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setDetailsLoading(false);
-      });
+    // getDetails swallows fetch errors and returns the bare item, so a proxy
+    // hiccup (common mid-startup-burst) used to leave the page permanently
+    // without seasons/cast. Retry until the payload actually looks hydrated.
+    const looksHydrated = (details: MediaItem) => details.mediaType === "tv"
+      ? Boolean(details.seasons?.length)
+      : Boolean(details.cast?.length || details.related?.length || details.trailerUrl);
+    void (async () => {
+      for (let attempt = 0; attempt < 3 && active; attempt += 1) {
+        const details = await getDetails(item).catch(() => null);
+        if (!active) return;
+        if (details) setDetailsItem(details);
+        if (details && looksHydrated(details)) break;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 900 * (attempt + 1)));
+      }
+      if (active) setDetailsLoading(false);
+    })();
     return () => { active = false; };
   }, [item.id, item.mediaType]);
 
@@ -789,6 +797,7 @@ function SeasonEpisodes({ item, loadingDetails, selectedEpisode, isWatched, onPl
   const [season, setSeason] = useState(seasons[0]?.seasonNumber ?? 1);
   const [episodes, setEpisodes] = useState<EpisodeInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     if (seasons.length && !seasons.some((entry) => entry.seasonNumber === season)) {
@@ -804,7 +813,7 @@ function SeasonEpisodes({ item, loadingDetails, selectedEpisode, isWatched, onPl
       .catch(() => undefined)
       .finally(() => active && setLoading(false));
     return () => { active = false; };
-  }, [item.id, season]);
+  }, [item.id, season, retryNonce]);
 
   return (
     <section className="detail-section episodes-section detail-wide">
@@ -824,7 +833,12 @@ function SeasonEpisodes({ item, loadingDetails, selectedEpisode, isWatched, onPl
       </div>
       <RailScroller className="episode-list" ariaLabel={`season ${season} episodes`}>
         {(loading || loadingDetails) && <p className="empty">Loading episodes...</p>}
-        {!loading && !loadingDetails && !episodes.length ? <p className="empty">No episodes found.</p> : null}
+        {!loading && !loadingDetails && !episodes.length ? (
+          <p className="empty">
+            No episodes found.{" "}
+            <button type="button" className="episode-retry" onClick={() => setRetryNonce((n) => n + 1)}>Retry</button>
+          </p>
+        ) : null}
         {!loading && episodes.map((episode) => {
           const active = selectedEpisode?.season === season && selectedEpisode?.episode === episode.episodeNumber;
           const episodeRating = episode.imdbRating || (episode.voteAverage && episode.voteAverage > 0 ? episode.voteAverage.toFixed(1) : "");
