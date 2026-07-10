@@ -1061,24 +1061,22 @@ function VideoPlayer({
           <p>{liveTv ? "This channel could not be played right now." : "This source could not be played in the browser."}</p>
           <span>
             {liveTv
-              ? "ARVIO tried every route (direct, HLS, and proxy relays) and the provider refused them all. Most often the provider is blocking your network or ISP — many providers suggest a VPN for exactly this. Trying another channel, or this channel in VLC, tells you if it's the whole line or just this stream."
+              ? "Most IPTV providers serve live channels over plain HTTP, which a secure web page can't play (mixed content), and many also block anything that isn't a real player app. Open it in VLC — it plays the exact same stream from your own connection, with no browser restrictions."
               : "This title's versions use a codec (often Dolby Vision or HEVC) your browser can't render. Open it in an external player, which decodes anything — ARVIO still tracks your progress on Trakt when you come back."}
           </span>
-          {!liveTv && (
-            <div className="player-error-actions">
-              <button type="button" className="player-error-external" onClick={() => openExternal("vlc", stream)}>
-                <ExternalLink size={15} /> Open in VLC
+          <div className="player-error-actions">
+            <button type="button" className="player-error-external" onClick={() => openExternal("vlc", stream)}>
+              <ExternalLink size={15} /> Open in VLC
+            </button>
+            <button type="button" className="player-error-external" onClick={() => openExternal("infuse", stream)}>
+              <ExternalLink size={15} /> Open in Infuse
+            </button>
+            {!liveTv && !stream.transcoded && parseDebridStream(stream.url) && (
+              <button type="button" className="player-error-transcode" onClick={() => onSelectStream(stream, { forceTranscode: true })}>
+                <Play size={15} fill="currentColor" /> Transcode
               </button>
-              <button type="button" className="player-error-external" onClick={() => openExternal("infuse", stream)}>
-                <ExternalLink size={15} /> Open in Infuse
-              </button>
-              {!stream.transcoded && parseDebridStream(stream.url) && (
-                <button type="button" className="player-error-transcode" onClick={() => onSelectStream(stream, { forceTranscode: true })}>
-                  <Play size={15} fill="currentColor" /> Transcode
-                </button>
-              )}
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
       {skipOverlay !== null && (

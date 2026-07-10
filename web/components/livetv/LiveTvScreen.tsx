@@ -1,7 +1,8 @@
 "use client";
 
-import { CalendarClock, ChevronDown, Eye, EyeOff, History, LayoutGrid, List, ListVideo, Play, Plus, RefreshCw, Search, Star, Tv, X } from "lucide-react";
+import { CalendarClock, ChevronDown, ExternalLink, Eye, EyeOff, History, LayoutGrid, List, ListVideo, Play, Plus, RefreshCw, Search, Star, Tv, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { externalLaunchMode, openExternalPlayer } from "@/lib/externalPlayers";
 import { groupKey, loadXtreamCatchup, type CatchupProgram } from "@/lib/iptv";
 import { useApp } from "@/lib/store";
 import type { IptvChannel, IptvSnapshot } from "@/lib/types";
@@ -25,6 +26,26 @@ function groupLabel(group: string) {
 
 export function LiveTvScreen() {
   const { iptvSnapshot, settings, setSettings, playChannel, playCatchup, setToast, refreshIptv, loadIptvGuide, busy, auth } = useApp();
+
+  // Open a channel straight in VLC/Infuse from the detail panel — the reliable
+  // path for the many IPTV providers whose plain-HTTP streams a secure web page
+  // can't play, without first waiting for the in-browser attempt to fail.
+  const openChannelExternally = useCallback((channel: IptvChannel, player: "vlc" | "infuse") => {
+    setToast(
+      player === "infuse"
+        ? "Opening in Infuse…"
+        : externalLaunchMode("vlc") === "playlist"
+          ? "VLC playlist saved — open it from your downloads to play."
+          : "Opening in VLC…"
+    );
+    openExternalPlayer(
+      player,
+      { source: channel.name, addonName: "Live TV", quality: "Live", size: "", url: channel.streamUrl, description: channel.group },
+      channel.name,
+      settings.defaultSubtitle
+    );
+  }, [setToast, settings.defaultSubtitle]);
+
   const playlists = settings.iptvPlaylists;
   const favorites = settings.favoriteChannelIds;
   const favoriteGroups = settings.favoriteGroupIds;
@@ -381,6 +402,9 @@ export function LiveTvScreen() {
                 )}
                 <div className="livetv-detail-actions">
                   <button type="button" className="primary" onClick={() => playChannel(selectedChannel)}><Play size={17} fill="currentColor" /> Watch</button>
+                  <button type="button" className="secondary" onClick={() => openChannelExternally(selectedChannel, "vlc")}>
+                    <ExternalLink size={17} /> VLC
+                  </button>
                   <button
                     type="button"
                     className={favorites.includes(selectedChannel.id) ? "secondary is-active" : "secondary"}
