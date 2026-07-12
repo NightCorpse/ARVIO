@@ -719,7 +719,7 @@ function streamBadges(stream: StreamSource) {
   const size = stream.size || text.match(/\b\d+(?:\.\d+)?\s?(?:gb|mb|tb)\b/i)?.[0]?.toUpperCase();
   if (size) labels.push({ label: size });
   if (stream.behaviorHints?.cached) labels.push({ label: "CACHED", tone: "ok" });
-  if (/real-?debrid|premiumize|torbox|\brd\b|\bpm\b|\bdebrid\b/i.test(text)) labels.push({ label: "DEBRID", tone: "ok" });
+  if (parseDebridStream(stream.url) || /real-?debrid|premiumize|alldebrid|torbox|\brd\b|\bpm\b|\bad\b|\bdebrid\b/i.test(text)) labels.push({ label: "DEBRID", tone: "ok" });
   if (stream.url) labels.push({ label: "DIRECT", tone: "ok" });
   const mode = streamPlayability(stream).mode;
   if (mode === "direct") labels.push({ label: "WEB", tone: "ok" });
