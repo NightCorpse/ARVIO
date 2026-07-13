@@ -12,7 +12,7 @@ import { streamPlayability } from "./streamCompatibility";
 import { loadHomeServerRows } from "./homeserver";
 import { buildXtreamCatchupUrl, loadIptvGuideForChannels, loadIptvSnapshot, loadPlaylists, savePlaylists } from "./iptv";
 import { dedupeMedia, historyToItem, hydrateTraktItems, traktItemToMedia, traktPlaybackToMedia, traktUpNextToMedia } from "./mappers";
-import { loadStored, removeStored, saveStored } from "./storage";
+import { loadStored, purgeLegacyStorage, removeStored, saveStored } from "./storage";
 import { getDetails, loadCatalog, searchMedia } from "./tmdb";
 import { TraktClient, type TraktDeviceCode } from "./trakt";
 import type {
@@ -30,6 +30,11 @@ import type {
   Profile,
   StreamSource
 } from "./types";
+
+// Reclaim space from superseded cache keys before anything reads or writes —
+// once localStorage is full every save fails silently, which starved the
+// Continue Watching seed and Trakt progress caches on long-lived installs.
+purgeLegacyStorage();
 
 export const authClient = new AuthClient();
 export const traktClient = new TraktClient();
@@ -56,6 +61,23 @@ function watchlistCacheKeyFor(profileId: string | null | undefined) {
 function readCachedList(key: string): MediaItem[] {
   const cached = loadStored<{ at: number; items: MediaItem[] } | null>(key, null);
   return cached?.items?.length && Date.now() - cached.at < LIST_CACHE_TTL_MS ? cached.items : [];
+}
+
+// Cache-only representation of a media item: cast/related are the bulk of a
+// hydrated item (tens of KB each) and the rails never render them — details
+// refetches both anyway. Full items once pushed localStorage past its ~5MB
+// quota, after which EVERY cache write failed silently.
+function slimCacheItem(item: MediaItem): MediaItem {
+  const { cast, related, ...slim } = item;
+  return slim;
+}
+
+function saveCachedList(key: string, items: MediaItem[], max: number) {
+  try {
+    saveStored(key, { at: Date.now(), items: items.slice(0, max).map(slimCacheItem) });
+  } catch {
+    // Never let a cache write break the refresh.
+  }
 }
 
 export type AppView = "profiles" | "login" | "app";
@@ -252,10 +274,16 @@ async function loadTraktUpNext(watchedShowsRows: unknown[], includeSpecials: boo
       const row = watched as { show?: { ids?: { trakt?: number } } };
       const traktId = row.show?.ids?.trakt;
       if (!traktId) continue;
-      const cacheKey = `${traktId}:${traktActivityTime(watched)}:${includeSpecials}`;
+      const activityAt = traktActivityTime(watched);
+      const cacheKey = `${traktId}:${activityAt}:${includeSpecials}`;
       let progress: unknown = showProgressCache.get(cacheKey) ?? null;
       if (progress === undefined || progress === null) {
-        progress = await traktClient.showProgress(traktId, includeSpecials).catch(() => null);
+        // activityAt keys the persistent cache: unchanged activity = identical
+        // progress, so repeat boots read from localStorage instead of firing
+        // ~120 Trakt calls — the difference between CW enriching in seconds vs
+        // half a minute (and the reason the CW cache never got written on
+        // devices where sessions were shorter than the old pipeline).
+        progress = await traktClient.showProgress(traktId, includeSpecials, activityAt).catch(() => null);
         if (progress) {
           showProgressCache.set(cacheKey, progress);
           if (showProgressCache.size > 200) {
@@ -640,7 +668,7 @@ export function AppProvider({
         void hydrateTraktItems(fastWatchlistSource).then((hydrated) => {
           if (hydrated.length && refreshKeyRef.current === key) {
             setWatchlist((current) => current.length ? current : hydrated);
-            try { saveStored(watchlistCacheKey, { at: Date.now(), items: hydrated.slice(0, 60) }); } catch { /* non-fatal */ }
+            saveCachedList(watchlistCacheKey, hydrated, 60);
           }
         }).catch(() => undefined);
       }
@@ -656,6 +684,13 @@ export function AppProvider({
           setCategories((current) => current.some((c) => c.id === "continue_watching")
             ? current
             : [{ id: "continue_watching", title: "Continue Watching", items: hydrated }, ...current]);
+          // First visit on a device (no cache yet): persist this list so the
+          // NEXT open paints instantly even if this session ends before the
+          // enriched pipeline (which normally owns the cache) completes. Never
+          // overwrite an existing richer cache with this playback-only list.
+          if (!readCachedList(cwCacheKey).length) {
+            saveCachedList(cwCacheKey, hydrated, 20);
+          }
         }).catch(() => undefined);
       }
       // ───────────────────────────────────────────────────────────────────────
@@ -691,7 +726,7 @@ export function AppProvider({
         if (cw.length) {
           cwSourceRef.current = "fresh";
           setContinueWatching(cw);
-          saveStored(cwCacheKey, { at: Date.now(), items: cw.slice(0, 20) });
+          saveCachedList(cwCacheKey, cw, 20);
           setCategories((current) => {
             const others = current.filter((c) => c.id !== "continue_watching");
             return [{ id: "continue_watching", title: "Continue Watching", items: cw }, ...others];
@@ -711,11 +746,7 @@ export function AppProvider({
       const hydratedWatchlist = await hydrateTraktItems(watchlistSource);
       if (hydratedWatchlist.length && refreshKeyRef.current === key) {
         setWatchlist(hydratedWatchlist);
-        try {
-          saveStored(watchlistCacheKey, { at: Date.now(), items: hydratedWatchlist.slice(0, 60) });
-        } catch {
-          // Non-fatal.
-        }
+        saveCachedList(watchlistCacheKey, hydratedWatchlist, 60);
       }
       } catch (error) {
         setToast(error instanceof Error ? error.message : "Failed to load ARVIO");
@@ -1308,11 +1339,7 @@ export function AppProvider({
     }
     const hydrated = await hydrateTraktItems(rows.map(traktItemToMedia));
     if (hydrated.length) {
-      try {
-        saveStored(cacheKey, { at: Date.now(), items: hydrated.slice(0, 200) });
-      } catch {
-        // non-fatal
-      }
+      saveCachedList(cacheKey, hydrated, 200);
     }
     return hydrated;
   }, []);

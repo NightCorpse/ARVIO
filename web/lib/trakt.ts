@@ -3,7 +3,10 @@ import { jsonRequest } from "./http";
 import { loadStored, removeStored, saveStored } from "./storage";
 
 const TRAKT_TOKEN_KEY = "arvio.web.trakt.token";
-const TRAKT_PROGRESS_CACHE_KEY = "arvio.web.trakt.progressCache.v1";
+// v2: v1 stored FULL progress payloads (every season/episode — ~740KB across a
+// library) and helped exhaust the localStorage quota; v2 entries are slimmed
+// to the four fields Continue Watching reads.
+const TRAKT_PROGRESS_CACHE_KEY = "arvio.web.trakt.progressCache.v2";
 const TRAKT_PROGRESS_TTL_MS = 15 * 60 * 1000;
 
 export interface TraktDeviceCode {
@@ -156,10 +159,14 @@ export class TraktClient {
     return all;
   }
 
-  async showProgress(traktShowId: number, includeSpecials = false) {
+  // `activityKey` (the show's last_watched_at) makes the persistent cache
+  // activity-keyed: a show whose activity hasn't moved has IDENTICAL progress,
+  // so entries stay valid for days instead of the blanket 15-minute TTL — a
+  // repeat app boot then costs ~zero progress calls instead of ~120.
+  async showProgress(traktShowId: number, includeSpecials = false, activityKey?: string | number) {
     if (!this.token) return null;
     await this.refreshIfNeeded();
-    const cached = readProgressCache(this.token.access_token, traktShowId, includeSpecials);
+    const cached = readProgressCache(this.token.access_token, traktShowId, includeSpecials, activityKey);
     if (cached !== undefined) return cached;
     const query = new URLSearchParams({
       hidden: "false",
@@ -169,7 +176,7 @@ export class TraktClient {
     const progress = await this.trakt<unknown>(`/shows/${traktShowId}/progress/watched?${query.toString()}`, {
       headers: { "x-user-token": this.token.access_token }
     });
-    writeProgressCache(this.token.access_token, traktShowId, includeSpecials, progress);
+    writeProgressCache(this.token.access_token, traktShowId, includeSpecials, progress, activityKey);
     return progress;
   }
 
@@ -242,6 +249,12 @@ export class TraktClient {
     const url = new URL(`/api/trakt/${path.replace(/^\/+/, "")}`, window.location.origin);
     const request = {
       ...init,
+      // Hard timeout: a single hanging Trakt response (throttling that never
+      // answers) used to block one of the up-next workers forever — and
+      // Promise.all over the workers then hung the WHOLE enriched Continue
+      // Watching pipeline, so the fresh rail never landed and the instant-paint
+      // cache never got written.
+      signal: init.signal ?? (typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(15_000) : undefined),
       headers: {
         "trakt-api-version": "2",
         "trakt-api-key": config.traktClientId,
@@ -281,7 +294,10 @@ export class TraktClient {
     const response = await fetch(target.toString(), {
       ...init,
       headers,
-      cache: "no-store"
+      cache: "no-store",
+      // Fresh timeout: the signal inherited from the proxy attempt may already
+      // be (nearly) expired by the time this fallback runs.
+      signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(15_000) : undefined
     });
     if (!response.ok) {
       const raw = await response.text().catch(() => "");
@@ -350,25 +366,57 @@ interface TraktMediaRef {
 
 type ProgressCacheEntry = { at: number; value: unknown };
 
-function progressCacheKey(token: string, traktShowId: number, includeSpecials: boolean) {
-  return `${token.slice(0, 12)}:${traktShowId}:${includeSpecials ? "specials" : "regular"}`;
+// Activity-keyed entries (key includes the show's last_watched_at) stay valid
+// for a week — progress can only change when activity changes, and a changed
+// activity produces a NEW key so stale entries are never read, just evicted by
+// the size cap. Legacy keys without an activity component keep the short TTL.
+const TRAKT_PROGRESS_ACTIVITY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function progressCacheKey(token: string, traktShowId: number, includeSpecials: boolean, activityKey?: string | number) {
+  const activity = activityKey !== undefined && activityKey !== null && activityKey !== "" ? `:${activityKey}` : "";
+  return `${token.slice(0, 12)}:${traktShowId}:${includeSpecials ? "specials" : "regular"}${activity}`;
 }
 
-function readProgressCache(token: string, traktShowId: number, includeSpecials: boolean) {
+function readProgressCache(token: string, traktShowId: number, includeSpecials: boolean, activityKey?: string | number) {
   const cache = loadStored<Record<string, ProgressCacheEntry>>(TRAKT_PROGRESS_CACHE_KEY, {});
-  const entry = cache[progressCacheKey(token, traktShowId, includeSpecials)];
-  if (!entry || Date.now() - entry.at > TRAKT_PROGRESS_TTL_MS) return undefined;
+  const entry = cache[progressCacheKey(token, traktShowId, includeSpecials, activityKey)];
+  const ttl = activityKey !== undefined ? TRAKT_PROGRESS_ACTIVITY_TTL_MS : TRAKT_PROGRESS_TTL_MS;
+  if (!entry || Date.now() - entry.at > ttl) return undefined;
   return entry.value;
 }
 
-function writeProgressCache(token: string, traktShowId: number, includeSpecials: boolean, value: unknown) {
+// Persist only the fields Continue Watching actually reads
+// (traktUpNextToMedia): a full progress payload lists every season+episode —
+// hundreds of KB across a library, which once filled the ~5MB localStorage
+// quota and silently broke every cache write in the app.
+function slimProgress(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const progress = value as {
+    aired?: number;
+    completed?: number;
+    last_watched_at?: string;
+    next_episode?: { season?: number; number?: number; title?: string } | null;
+  };
+  return {
+    aired: progress.aired,
+    completed: progress.completed,
+    last_watched_at: progress.last_watched_at,
+    next_episode: progress.next_episode
+      ? { season: progress.next_episode.season, number: progress.next_episode.number, title: progress.next_episode.title }
+      : null
+  };
+}
+
+function writeProgressCache(token: string, traktShowId: number, includeSpecials: boolean, value: unknown, activityKey?: string | number) {
   const cache = loadStored<Record<string, ProgressCacheEntry>>(TRAKT_PROGRESS_CACHE_KEY, {});
   const next = {
     ...cache,
-    [progressCacheKey(token, traktShowId, includeSpecials)]: { at: Date.now(), value }
+    [progressCacheKey(token, traktShowId, includeSpecials, activityKey)]: { at: Date.now(), value: slimProgress(value) }
   };
+  // Cap must exceed the up-next scan width (120 shows) or entries churn out
+  // before the next boot can reuse them.
   const entries = Object.entries(next)
     .sort((a, b) => b[1].at - a[1].at)
-    .slice(0, 120);
+    .slice(0, 240);
   saveStored(TRAKT_PROGRESS_CACHE_KEY, Object.fromEntries(entries));
 }
