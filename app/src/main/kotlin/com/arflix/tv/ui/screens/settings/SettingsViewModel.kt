@@ -2480,7 +2480,7 @@ class SettingsViewModel @Inject constructor(
                 toastMessage = "Starting code sign in...",
                 toastType = ToastType.INFO
             )
-            val result = homeServerRepository.startPlexPinAuth()
+            val result = homeServerRepository.startHomeServerCodeAuth(trimmedUrl)
             result.onSuccess { session ->
                 _uiState.value = _uiState.value.copy(
                     isHomeServerConnecting = false,
@@ -2513,12 +2513,16 @@ class SettingsViewModel @Inject constructor(
             var lastFailure: String? = null
             while (System.currentTimeMillis() < deadline) {
                 delay(session.interval.coerceIn(2, 15) * 1000L)
-                val tokenResult = homeServerRepository.pollPlexPinAuth(session.id)
-                val accountToken = tokenResult.getOrElse { error ->
+                val connectionResult = homeServerRepository.pollHomeServerCodeAuth(
+                    session = session,
+                    preferredServerUrl = serverUrl,
+                    displayName = plexHomeServerDisplayName.orEmpty()
+                )
+                val connection = connectionResult.getOrElse { error ->
                     lastFailure = error.message
                     null
                 }
-                if (accountToken.isNullOrBlank()) {
+                if (connection == null) {
                     continue
                 }
 
@@ -2527,12 +2531,7 @@ class SettingsViewModel @Inject constructor(
                     toastMessage = "Connecting server...",
                     toastType = ToastType.INFO
                 )
-                val connectionResult = homeServerRepository.connectPlexAccount(
-                    accountToken = accountToken,
-                    preferredServerUrl = serverUrl,
-                    displayName = plexHomeServerDisplayName.orEmpty()
-                )
-                connectionResult.onSuccess { connection ->
+                runCatching {
                     syncHomeServerCatalogsFromConnections()
                     val connections = homeServerRepository.currentConnections()
                     plexHomeServerUrl = null

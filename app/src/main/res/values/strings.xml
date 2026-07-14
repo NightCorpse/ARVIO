@@ -328,6 +328,7 @@
     <string name="settings_edit_quality_filter">Edit Quality Filter</string>
     <string name="settings_plex_auth_touch_instruction">Open the auth page, sign in, then return to ARVIO. This screen will finish automatically.</string>
     <string name="settings_plex_auth_tv_instruction">Scan the QR code or open the auth page and confirm this code</string>
+    <string name="settings_jellyfin_auth_instruction">Open your Jellyfin app or web UI, go to Quick Connect, enter this code, then return to ARVIO.</string>
     <string name="settings_quality_filters_subtitle">Device-local filters. Matching streams are excluded.</string>
     <string name="settings_no_filters_yet">No filters configured yet.</string>
     <string name="settings_unnamed_device">Unnamed Device</string>
@@ -514,7 +515,7 @@
     <string name="settings_add_server">Add server</string>
     <string name="settings_add_server_subtitle">Personal media libraries as sources</string>
     <string name="settings_add_another">Add another</string>
-    <string name="settings_connect_code_subtitle">Sign in with a server code</string>
+    <string name="settings_connect_code_subtitle">Plex PIN or Jellyfin Quick Connect</string>
     <string name="settings_waiting">Waiting</string>
     <string name="settings_collections_count">%1$d collections</string>
     <string name="settings_section_actions">ACTIONS</string>
@@ -524,7 +525,7 @@
     <string name="settings_disconnect_all">Disconnect all</string>
     <string name="settings_no_server_connected">No server is connected</string>
     <string name="settings_remove_all_servers">Remove all servers from the active profile</string>
-    <string name="settings_connect_code_description">Sign in with a server code and use media libraries as sources</string>
+    <string name="settings_connect_code_description">Use Plex PIN with no URL, or enter a Jellyfin URL for Quick Connect</string>
     <string name="settings_code">Code</string>
     <string name="settings_change">Change</string>
     <string name="settings_remove">Remove</string>

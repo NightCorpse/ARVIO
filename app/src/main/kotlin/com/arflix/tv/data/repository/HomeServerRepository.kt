@@ -78,10 +78,13 @@ private data class HomeServerProfileConfig(
 
 data class PlexPinAuthSession(
     val id: String = "",
+    val secret: String = "",
     val code: String = "",
     val verificationUrl: String = "",
     val expiresIn: Int = 600,
-    val interval: Int = 5
+    val interval: Int = 5,
+    val serverKind: HomeServerKind = HomeServerKind.PLEX,
+    val serverUrl: String = ""
 )
 
 data class HomeServerCatalogCandidate(
@@ -353,39 +356,79 @@ class HomeServerRepository @Inject constructor(
         }
     }
 
-    suspend fun startPlexPinAuth(): Result<PlexPinAuthSession> = withContext(Dispatchers.IO) {
+    suspend fun startHomeServerCodeAuth(serverUrl: String): Result<PlexPinAuthSession> = withContext(Dispatchers.IO) {
         runCatching {
-            val url = "https://plex.tv/api/v2/pins".toHttpUrlOrNull()
-                ?.newBuilder()
-                ?.addQueryParameter("strong", "true")
-                ?.addQueryParameter("X-Plex-Client-Identifier", deviceId())
-                ?.addQueryParameter("X-Plex-Product", "ARVIO")
-                ?.build()
-                ?.toString()
-                ?: error(context.getString(R.string.homeserver_invalid_code_url))
-            val request = Request.Builder()
-                .url(url)
-                .post(ByteArray(0).toRequestBody(null))
-                .headers(plexPublicHeaders())
-                .build()
-            okHttpClient.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    error(context.getString(R.string.homeserver_code_signin_failed_code, response.code))
-                }
-                val json = JsonParser().parse(body).asJsonObjectOrNull() ?: JsonObject()
-                val id = json.string("id").ifBlank { json.string("pinId") }
-                val code = json.string("code")
-                require(id.isNotBlank() && code.isNotBlank()) { context.getString(R.string.homeserver_no_activation_code) }
-                PlexPinAuthSession(
-                    id = id,
-                    code = code,
-                    verificationUrl = plexActivationUrl(code),
-                    expiresIn = json.int("expiresIn") ?: json.int("expires_in") ?: 600,
-                    interval = (json.int("interval") ?: 5).coerceIn(2, 15)
-                )
+            val normalizedUrl = normalizeServerUrl(serverUrl)
+            if (normalizedUrl.isBlank()) return@runCatching startPlexPinAuthInternal()
+
+            val publicInfo = fetchPublicInfo(normalizedUrl)
+            val detectedKind = publicInfo.serverKind
+                .takeUnless { it == HomeServerKind.UNKNOWN }
+                ?: detectServerKind(publicInfo.productName, publicInfo.serverName)
+            when (detectedKind) {
+                HomeServerKind.JELLYFIN -> startJellyfinQuickConnect(normalizedUrl)
+                HomeServerKind.PLEX -> startPlexPinAuthInternal().copy(serverUrl = normalizedUrl)
+                HomeServerKind.EMBY -> error("Code sign in is not supported by Emby. Use username and password.")
+                HomeServerKind.UNKNOWN -> error("Could not detect this server. Use username and password, or leave URL empty for Plex.")
             }
         }
+    }
+
+    suspend fun startPlexPinAuth(): Result<PlexPinAuthSession> = withContext(Dispatchers.IO) {
+        runCatching { startPlexPinAuthInternal() }
+    }
+
+    private fun startPlexPinAuthInternal(): PlexPinAuthSession {
+        val url = "https://plex.tv/api/v2/pins".toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addQueryParameter("strong", "true")
+            ?.addQueryParameter("X-Plex-Client-Identifier", deviceId())
+            ?.addQueryParameter("X-Plex-Product", "ARVIO")
+            ?.build()
+            ?.toString()
+            ?: error(context.getString(R.string.homeserver_invalid_code_url))
+        val request = Request.Builder()
+            .url(url)
+            .post(ByteArray(0).toRequestBody(null))
+            .headers(plexPublicHeaders())
+            .build()
+        okHttpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                error(context.getString(R.string.homeserver_code_signin_failed_code, response.code))
+            }
+            val json = JsonParser().parse(body).asJsonObjectOrNull() ?: JsonObject()
+            val id = json.string("id").ifBlank { json.string("pinId") }
+            val code = json.string("code")
+            require(id.isNotBlank() && code.isNotBlank()) { context.getString(R.string.homeserver_no_activation_code) }
+            return PlexPinAuthSession(
+                id = id,
+                code = code,
+                verificationUrl = plexActivationUrl(code),
+                expiresIn = json.int("expiresIn") ?: json.int("expires_in") ?: 600,
+                interval = (json.int("interval") ?: 5).coerceIn(2, 15),
+                serverKind = HomeServerKind.PLEX
+            )
+        }
+    }
+
+    private fun startJellyfinQuickConnect(serverUrl: String): PlexPinAuthSession {
+        val response = postJson(buildUrl(serverUrl, "/QuickConnect/Initiate"), JsonObject())
+        val code = response.string("Code").ifBlank { response.string("code") }
+        val secret = response.string("Secret").ifBlank { response.string("secret") }
+        require(code.isNotBlank() && secret.isNotBlank()) {
+            context.getString(R.string.homeserver_no_activation_code)
+        }
+        return PlexPinAuthSession(
+            id = secret,
+            secret = secret,
+            code = code,
+            verificationUrl = serverUrl.trimEnd('/'),
+            expiresIn = 600,
+            interval = 5,
+            serverKind = HomeServerKind.JELLYFIN,
+            serverUrl = serverUrl
+        )
     }
 
     suspend fun pollPlexPinAuth(pinId: String): Result<String?> = withContext(Dispatchers.IO) {
@@ -412,6 +455,62 @@ class HomeServerRepository @Inject constructor(
                     .takeIf { it.isNotBlank() }
             }
         }
+    }
+
+    suspend fun pollHomeServerCodeAuth(
+        session: PlexPinAuthSession,
+        preferredServerUrl: String = "",
+        displayName: String = ""
+    ): Result<HomeServerConnection?> = withContext(Dispatchers.IO) {
+        runCatching {
+            when (session.serverKind) {
+                HomeServerKind.PLEX -> {
+                    val token = pollPlexPinAuth(session.id).getOrThrow()
+                    if (token.isNullOrBlank()) {
+                        null
+                    } else {
+                        connectPlexAccount(
+                            accountToken = token,
+                            preferredServerUrl = preferredServerUrl.ifBlank { session.serverUrl },
+                            displayName = displayName
+                        ).getOrThrow()
+                    }
+                }
+                HomeServerKind.JELLYFIN -> pollJellyfinQuickConnect(session, displayName)
+                else -> error(context.getString(R.string.homeserver_code_signin_failed))
+            }
+        }
+    }
+
+    private suspend fun pollJellyfinQuickConnect(
+        session: PlexPinAuthSession,
+        displayName: String
+    ): HomeServerConnection? {
+        val serverUrl = session.serverUrl.ifBlank { return null }
+        val secret = session.secret.ifBlank { session.id }
+        val state = getJson(buildUrl(serverUrl, "/QuickConnect/Connect", mapOf("secret" to secret)))
+        val authenticated = state.boolean("Authenticated") ?: state.boolean("authenticated") ?: false
+        if (!authenticated) return null
+
+        val auth = authenticateWithQuickConnect(serverUrl, secret)
+        val publicInfo = fetchPublicInfo(serverUrl)
+        val connectionShell = HomeServerConnection(
+            enabled = true,
+            connectionId = createConnectionId(serverUrl, HomeServerKind.JELLYFIN, auth.userId),
+            serverUrl = serverUrl,
+            displayName = displayName.trim(),
+            serverName = publicInfo.serverName.ifBlank { auth.serverName }.ifBlank { "Jellyfin" },
+            serverKind = HomeServerKind.JELLYFIN,
+            serverId = auth.serverId.ifBlank { publicInfo.serverId },
+            userId = auth.userId,
+            userName = auth.userName,
+            accessToken = auth.accessToken,
+            accountToken = auth.accountToken,
+            lastConnectedAt = System.currentTimeMillis()
+        )
+        val connection = connectionShell.copy(collections = fetchCollections(connectionShell))
+        saveConnection(connection)
+        return connection
     }
 
     suspend fun currentConnection(): HomeServerConnection? {
@@ -566,6 +665,7 @@ class HomeServerRepository @Inject constructor(
         profileId: String,
         connections: List<HomeServerConnection>
     ) {
+        clearSourceCache()
         context.settingsDataStore.edit { prefs ->
             prefs[connectionKeyFor(profileId)] = gson.toJson(
                 HomeServerProfileConfig(connections = connections.map { it.sanitized().encryptedForStorage() })
@@ -580,6 +680,7 @@ class HomeServerRepository @Inject constructor(
     }
 
     suspend fun importCloudConnectionsJsonForProfile(profileId: String, json: String?) {
+        clearSourceCache()
         if (json.isNullOrBlank()) {
             context.settingsDataStore.edit { prefs -> prefs.remove(connectionKeyFor(profileId)) }
             return
@@ -947,6 +1048,25 @@ class HomeServerRepository @Inject constructor(
             addProperty("Password", password)
         }
         val response = postJson(buildUrl(serverUrl, "/Users/AuthenticateByName"), body)
+        val user = response.obj("User")
+        return AuthResponse(
+            accessToken = response.string("AccessToken"),
+            serverId = response.string("ServerId"),
+            serverName = user?.string("ServerName").orEmpty(),
+            userId = user?.string("Id").orEmpty(),
+            userName = user?.string("Name").orEmpty()
+        ).also {
+            require(it.accessToken.isNotBlank() && it.userId.isNotBlank()) {
+                context.getString(R.string.homeserver_no_playable_account)
+            }
+        }
+    }
+
+    private fun authenticateWithQuickConnect(serverUrl: String, secret: String): AuthResponse {
+        val body = JsonObject().apply {
+            addProperty("Secret", secret)
+        }
+        val response = postJson(buildUrl(serverUrl, "/Users/AuthenticateWithQuickConnect"), body)
         val user = response.obj("User")
         return AuthResponse(
             accessToken = response.string("AccessToken"),
@@ -2269,6 +2389,7 @@ class HomeServerRepository @Inject constructor(
     }
 
     private fun JsonObject.string(name: String): String = get(name)?.asStringOrNull().orEmpty()
+    private fun JsonObject.boolean(name: String): Boolean? = get(name)?.asStringOrNull()?.toBooleanStrictOrNull()
     private fun JsonObject.int(name: String): Int? = get(name)?.asStringOrNull()?.toIntOrNull()
     private fun JsonObject.long(name: String): Long? = get(name)?.asStringOrNull()?.toLongOrNull()
     private fun JsonObject.obj(name: String): JsonObject? = get(name)?.asJsonObjectOrNull()

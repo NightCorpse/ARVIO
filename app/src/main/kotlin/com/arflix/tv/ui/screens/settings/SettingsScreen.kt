@@ -2029,10 +2029,13 @@ fun SettingsScreen(
         uiState.plexHomeServerAuth?.let { plexAuth ->
             TraktActivationModal(
                 title = stringResource(R.string.settings_connect_with_code),
-                instruction = if (LocalDeviceType.current.isTouchDevice()) {
-                    stringResource(R.string.settings_plex_auth_touch_instruction)
-                } else {
-                    stringResource(R.string.settings_plex_auth_tv_instruction)
+                instruction = when (plexAuth.serverKind) {
+                    HomeServerKind.JELLYFIN -> stringResource(R.string.settings_jellyfin_auth_instruction)
+                    else -> if (LocalDeviceType.current.isTouchDevice()) {
+                        stringResource(R.string.settings_plex_auth_touch_instruction)
+                    } else {
+                        stringResource(R.string.settings_plex_auth_tv_instruction)
+                    }
                 },
                 verificationUrl = plexAuth.verificationUrl,
                 userCode = plexAuth.code,
