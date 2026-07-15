@@ -1237,7 +1237,9 @@ private object StreamRegexes {
  *  keep their arrival order instead of re-sorting. Mirror of PlayerViewModel.keepsOwnStreamOrder. */
 private fun keepsOwnStreamOrder(stream: StreamSource): Boolean =
     stream.addonName.contains("aiostream", ignoreCase = true) ||
-        stream.addonId.contains("aiostream", ignoreCase = true)
+        stream.addonId.contains("aiostream", ignoreCase = true) ||
+        stream.addonName.contains("torrentio", ignoreCase = true) ||
+        stream.addonId.contains("torrentio", ignoreCase = true)
 
 internal fun sourceTabId(stream: StreamSource): String {
     val baseName = stream.addonName.split(" - ").firstOrNull()?.trim() ?: stream.addonName
