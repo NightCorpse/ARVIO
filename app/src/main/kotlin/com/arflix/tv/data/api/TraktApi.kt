@@ -50,7 +50,10 @@ interface TraktApi {
     suspend fun getWatchedMovies(
         @Header("Authorization") auth: String,
         @Header("trakt-api-key") clientId: String,
-        @Header("trakt-api-version") version: String = "2"
+        @Header("trakt-api-version") version: String = "2",
+        @Query("page") page: Int? = null,
+        @Query("limit") limit: Int? = null,
+        @Query("extended") extended: String? = null
     ): List<TraktWatchedMovie>
 
     @GET("sync/watched/shows")
@@ -58,7 +61,10 @@ interface TraktApi {
     suspend fun getWatchedShows(
         @Header("Authorization") auth: String,
         @Header("trakt-api-key") clientId: String,
-        @Header("trakt-api-version") version: String = "2"
+        @Header("trakt-api-version") version: String = "2",
+        @Query("page") page: Int? = null,
+        @Query("limit") limit: Int? = null,
+        @Query("extended") extended: String? = null
     ): List<TraktWatchedShow>
 
     @GET("sync/playback")

@@ -307,7 +307,7 @@ internal class IptvChannelStore(context: Context) : SQLiteOpenHelper(
     fun groupCounts(sourceKey: String): List<Pair<String, Int>> {
         if (sourceKey.isBlank()) return emptyList()
         return readableDatabase.rawQuery(
-            "SELECT group_title, COUNT(*) FROM channels WHERE source_key = ? GROUP BY group_title ORDER BY ord",
+            "SELECT group_title, COUNT(*), MIN(ord) AS first_ord FROM channels WHERE source_key = ? GROUP BY group_title ORDER BY first_ord",
             arrayOf(sourceKey)
         ).use { cursor ->
             val out = ArrayList<Pair<String, Int>>(cursor.count)
@@ -416,8 +416,8 @@ internal class IptvChannelStore(context: Context) : SQLiteOpenHelper(
 
     private companion object {
         const val DATABASE_NAME = "arvio_iptv_channels.db"
-        // v2 rebuilds snapshots created before provider-order imports became canonical.
-        const val DATABASE_VERSION = 2
+        // v3 rebuilds snapshots created before provider-order imports became canonical.
+        const val DATABASE_VERSION = 3
         const val MAX_SQL_ARGS = 900
     }
 }

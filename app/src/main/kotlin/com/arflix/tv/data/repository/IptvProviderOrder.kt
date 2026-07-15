@@ -1,83 +1,63 @@
 package com.arflix.tv.data.repository
 
 import com.arflix.tv.data.model.IptvChannel
+import com.arflix.tv.data.model.PlaylistGroupKey
 
 /**
- * Uses the provider's M3U sequence as the canonical channel order while retaining
- * richer Xtream API metadata and the stable Xtream channel ids used by favorites.
+ * Xtream providers expose their canonical group sequence through
+ * `get_live_categories`. `get_live_streams` is frequently global-number ordered,
+ * so flattening it directly makes groups appear in the wrong order. Bucket the
+ * streams by category while retaining each bucket's provider response sequence.
  */
-internal fun mergeXtreamChannelsInProviderOrder(
-    playlistChannels: List<IptvChannel>,
-    apiChannels: List<IptvChannel>,
+internal fun orderXtreamChannelsByProviderCategories(
+    categoryIdsInProviderOrder: List<String>,
+    categorizedChannels: List<Pair<String, IptvChannel>>,
 ): List<IptvChannel> {
-    if (playlistChannels.isEmpty()) return apiChannels
-    if (apiChannels.isEmpty()) {
-        return playlistChannels.map { channel ->
-            channel.copy(xtreamStreamId = channel.xtreamStreamId ?: providerOrderXtreamStreamId(channel))
+    if (categorizedChannels.isEmpty()) return emptyList()
+
+    val channelsByCategory = LinkedHashMap<String, MutableList<IptvChannel>>()
+    categorizedChannels.forEach { (rawCategoryId, channel) ->
+        val categoryId = rawCategoryId.trim()
+        channelsByCategory.getOrPut(categoryId) { ArrayList() }.add(channel)
+    }
+
+    val ordered = ArrayList<IptvChannel>(categorizedChannels.size)
+    categoryIdsInProviderOrder.asSequence()
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .forEach { categoryId ->
+            channelsByCategory.remove(categoryId)?.let(ordered::addAll)
         }
-    }
-
-    val apiByStreamId = LinkedHashMap<Int, IptvChannel>(apiChannels.size)
-    apiChannels.forEach { channel ->
-        providerOrderXtreamStreamId(channel)?.let { streamId ->
-            apiByStreamId.putIfAbsent(streamId, channel)
-        }
-    }
-
-    val emittedApiIds = HashSet<String>(apiChannels.size)
-    val ordered = ArrayList<IptvChannel>(maxOf(playlistChannels.size, apiChannels.size))
-    playlistChannels.forEach { playlistChannel ->
-        val streamId = providerOrderXtreamStreamId(playlistChannel)
-        val apiChannel = streamId?.let(apiByStreamId::get)
-        if (apiChannel == null) {
-            ordered += playlistChannel.copy(
-                xtreamStreamId = playlistChannel.xtreamStreamId ?: streamId,
-            )
-            return@forEach
-        }
-
-        if (!emittedApiIds.add(apiChannel.id)) return@forEach
-        ordered += apiChannel.copy(
-            name = playlistChannel.name.ifBlank { apiChannel.name },
-            streamUrl = playlistChannel.streamUrl.ifBlank { apiChannel.streamUrl },
-            group = playlistChannel.group.ifBlank { apiChannel.group },
-            logo = playlistChannel.logo ?: apiChannel.logo,
-            epgId = playlistChannel.epgId ?: apiChannel.epgId,
-            rawTitle = playlistChannel.rawTitle.ifBlank { apiChannel.rawTitle },
-            xtreamStreamId = apiChannel.xtreamStreamId ?: streamId,
-            catchupDays = maxOf(playlistChannel.catchupDays, apiChannel.catchupDays),
-            catchupType = playlistChannel.catchupType ?: apiChannel.catchupType,
-            catchupSource = playlistChannel.catchupSource ?: apiChannel.catchupSource,
-            tvgName = playlistChannel.tvgName ?: apiChannel.tvgName,
-            providerChannelNumber = playlistChannel.providerChannelNumber ?: apiChannel.providerChannelNumber,
-            requestHeaders = apiChannel.requestHeaders + playlistChannel.requestHeaders,
-            language = playlistChannel.language ?: apiChannel.language,
-            country = playlistChannel.country ?: apiChannel.country,
-            qualityLabel = playlistChannel.qualityLabel ?: apiChannel.qualityLabel,
-            variantKey = playlistChannel.variantKey ?: apiChannel.variantKey,
-            drmInfo = playlistChannel.drmInfo ?: apiChannel.drmInfo,
-        )
-    }
-
-    apiChannels.forEach { channel ->
-        if (emittedApiIds.add(channel.id)) ordered += channel
-    }
+    channelsByCategory.values.forEach(ordered::addAll)
     return ordered
 }
 
-private fun providerOrderXtreamStreamId(channel: IptvChannel): Int? {
-    channel.xtreamStreamId?.let { return it }
-
-    val idMatch = XTREAM_ID_SUFFIX.find(channel.id)
-    idMatch?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
-
-    val path = channel.streamUrl
-        .substringBefore('?')
-        .substringBefore('#')
-        .trimEnd('/')
-    return path.substringAfterLast('/')
-        .substringBefore('.')
-        .toIntOrNull()
+/**
+ * A saved group order belongs to the exact playlist source it was created for.
+ * Reusing a playlist id for a different URL must not carry the old custom order
+ * into the replacement provider.
+ */
+internal fun changedPlaylistSourceIds(
+    previous: List<IptvPlaylistEntry>,
+    current: List<IptvPlaylistEntry>,
+): Set<String> {
+    val previousById = previous.associateBy { it.id.trim() }
+    val currentById = current.associateBy { it.id.trim() }
+    return (previousById.keys + currentById.keys).asSequence()
+        .filter { it.isNotBlank() }
+        .filter { id ->
+            previousById[id]?.m3uUrl?.trim() != currentById[id]?.m3uUrl?.trim()
+        }
+        .toSet()
 }
 
-private val XTREAM_ID_SUFFIX = Regex("(?:^|:)xtream:(\\d+)$")
+internal fun retainGroupOrderForUnchangedSources(
+    savedOrder: List<String>,
+    changedPlaylistIds: Set<String>,
+): List<String> {
+    if (savedOrder.isEmpty() || changedPlaylistIds.isEmpty()) return savedOrder
+    return savedOrder.filterNot { raw ->
+        PlaylistGroupKey(raw.trim()).playlistId in changedPlaylistIds
+    }
+}

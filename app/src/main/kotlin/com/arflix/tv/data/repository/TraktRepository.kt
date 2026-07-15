@@ -496,10 +496,55 @@ class TraktRepository @Inject constructor(
 
     // ========== Watched History ==========
 
+    private suspend fun getAllWatchedMovies(auth: String): List<TraktWatchedMovie> {
+        val all = mutableListOf<TraktWatchedMovie>()
+        var page = 1
+        val limit = 250
+
+        while (true) {
+            val pageItems = traktApi.getWatchedMovies(
+                auth = auth,
+                clientId = clientId,
+                version = "2",
+                page = page,
+                limit = limit
+            )
+            if (pageItems.isEmpty()) break
+            all.addAll(pageItems)
+            if (pageItems.size < limit) break
+            page++
+        }
+
+        return all
+    }
+
+    private suspend fun getAllWatchedShows(auth: String): List<TraktWatchedShow> {
+        val all = mutableListOf<TraktWatchedShow>()
+        var page = 1
+        val limit = 250
+
+        while (true) {
+            val pageItems = traktApi.getWatchedShows(
+                auth = auth,
+                clientId = clientId,
+                version = "2",
+                page = page,
+                limit = limit,
+                extended = "progress"
+            )
+            if (pageItems.isEmpty()) break
+            all.addAll(pageItems)
+            if (pageItems.size < limit) break
+            page++
+        }
+
+        return all
+    }
+
     suspend fun getWatchedMovies(): Set<Int> {
         val auth = getAuthHeader() ?: return emptySet()
         return try {
-            val watched = traktApi.getWatchedMovies(auth, clientId)
+            val watched = getAllWatchedMovies(auth)
             watched.mapNotNull { it.movie.ids.tmdb }.toSet()
         } catch (e: java.io.IOException) {
             com.arflix.tv.util.AppLogger.e("TraktRepository", "Network or IO error, returning default", e)
@@ -518,7 +563,7 @@ class TraktRepository @Inject constructor(
     suspend fun getWatchedEpisodes(): Set<String> {
         val auth = getAuthHeader() ?: return emptySet()
         return try {
-            val watched = traktApi.getWatchedShows(auth, clientId)
+            val watched = getAllWatchedShows(auth)
             val episodes = mutableSetOf<String>()
             watched.forEach { show ->
                 val tmdbId = show.show.ids.tmdb ?: return@forEach
@@ -1110,7 +1155,7 @@ class TraktRepository @Inject constructor(
     private suspend fun populateTmdbToTraktCache() {
         val auth = getAuthHeader() ?: return
         try {
-            val watchedShows = traktApi.getWatchedShows(auth, clientId)
+            val watchedShows = getAllWatchedShows(auth)
             watchedShows.forEach { item ->
                 val tmdbId = item.show.ids.tmdb
                 val traktId = item.show.ids.trakt
@@ -1322,7 +1367,7 @@ class TraktRepository @Inject constructor(
             }
             val watchedShowsDeferred = async {
                 traktCallWithAuthRetry("watched shows") { currentAuth ->
-                    traktApi.getWatchedShows(currentAuth, clientId)
+                    getAllWatchedShows(currentAuth)
                 }
             }
 

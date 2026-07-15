@@ -226,16 +226,19 @@ private fun tvGeneralRowsForSection(section: String): List<Int> {
     }
 }
 
-private fun orderedIptvGroups(
+internal fun orderedIptvGroups(
     playlistId: String,
     availableGroups: List<String>,
     groupOrder: List<String>
 ): List<String> {
+    val available = availableGroups.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    val availableSet = available.toHashSet()
     val explicitOrder = groupOrder
         .map { com.arflix.tv.data.model.PlaylistGroupKey(it) }
         .filter { it.playlistId == playlistId }
         .map { it.groupName }
-    return (explicitOrder + availableGroups).distinct()
+        .filter { it in availableSet }
+    return (explicitOrder + available).distinct()
 }
 
 private fun openExternalUrl(context: Context, url: String) {

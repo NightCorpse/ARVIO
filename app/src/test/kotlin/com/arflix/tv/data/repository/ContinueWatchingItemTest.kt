@@ -24,7 +24,7 @@ class ContinueWatchingItemTest {
 
         val mediaItem = item.toMediaItem()
 
-        assertEquals("Continue S4.E29", mediaItem.subtitle)
+        assertEquals("Continue S4E29", mediaItem.subtitle)
         assertFalse(mediaItem.showPlaybackProgress)
         assertNull(mediaItem.timeRemainingLabel)
     }
@@ -44,7 +44,7 @@ class ContinueWatchingItemTest {
 
         val mediaItem = item.toMediaItem()
 
-        assertEquals("Continue S1.E2 from 22:30", mediaItem.subtitle)
+        assertEquals("Continue S1E2 from 22:30", mediaItem.subtitle)
         assertEquals("22min left", mediaItem.timeRemainingLabel)
     }
 }

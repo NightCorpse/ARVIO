@@ -7,46 +7,97 @@ import org.junit.Test
 class IptvProviderOrderTest {
 
     @Test
-    fun mergeUsesPlaylistOrderAndKeepsXtreamMetadataAndIds() {
-        val apiChannels = listOf(
-            apiChannel(101, "API One", "API News"),
-            apiChannel(102, "API Two", "API Sports"),
-            apiChannel(103, "API Three", "API Sports", catchupDays = 7),
-            apiChannel(104, "API Only", "API Extra"),
-        )
-        val providerPlaylist = listOf(
-            playlistChannel(103, "Provider Three", "Provider Sports"),
-            playlistChannel(101, "Provider One", "Provider News"),
-            playlistChannel(102, "Provider Two", "Provider Sports"),
+    fun xtreamCategoryEndpointDefinesGroupOrder() {
+        val categorizedChannels = listOf(
+            "sports" to apiChannel(301, "Sports One", "Sports"),
+            "kids" to apiChannel(201, "Kids One", "Kids"),
+            "entertainment" to apiChannel(101, "Entertainment One", "Entertainment"),
+            "sports" to apiChannel(302, "Sports Two", "Sports", catchupDays = 7),
+            "entertainment" to apiChannel(102, "Entertainment Two", "Entertainment"),
         )
 
-        val merged = mergeXtreamChannelsInProviderOrder(providerPlaylist, apiChannels)
+        val ordered = orderXtreamChannelsByProviderCategories(
+            categoryIdsInProviderOrder = listOf("entertainment", "kids", "sports"),
+            categorizedChannels = categorizedChannels,
+        )
 
-        assertThat(merged.map { it.id })
-            .containsExactly("xtream:103", "xtream:101", "xtream:102", "xtream:104")
+        assertThat(ordered.map { it.id })
+            .containsExactly("xtream:101", "xtream:102", "xtream:201", "xtream:301", "xtream:302")
             .inOrder()
-        assertThat(merged.take(3).map { it.name })
-            .containsExactly("Provider Three", "Provider One", "Provider Two")
+        assertThat(ordered.map { it.group })
+            .containsExactly("Entertainment", "Entertainment", "Kids", "Sports", "Sports")
             .inOrder()
-        assertThat(merged.take(3).map { it.group })
-            .containsExactly("Provider Sports", "Provider News", "Provider Sports")
-            .inOrder()
-        assertThat(merged.first().catchupDays).isEqualTo(7)
-        assertThat(merged.first().xtreamStreamId).isEqualTo(103)
+        assertThat(ordered.last().catchupDays).isEqualTo(7)
     }
 
     @Test
-    fun mergeWithoutApiStillPreservesPlaylistSequence() {
-        val providerPlaylist = listOf(
-            playlistChannel(30, "Third", "Group B"),
-            playlistChannel(10, "First", "Group A"),
-            playlistChannel(20, "Second", "Group A"),
+    fun channelsWithinCategoryKeepProviderStreamSequence() {
+        val categorizedChannels = listOf(
+            "sports" to apiChannel(30, "Provider Thirty", "Sports"),
+            "news" to apiChannel(20, "Provider Twenty", "News"),
+            "sports" to apiChannel(10, "Provider Ten", "Sports"),
         )
 
-        val merged = mergeXtreamChannelsInProviderOrder(providerPlaylist, emptyList())
+        val ordered = orderXtreamChannelsByProviderCategories(
+            categoryIdsInProviderOrder = listOf("sports", "news"),
+            categorizedChannels = categorizedChannels,
+        )
 
-        assertThat(merged.map { it.name }).containsExactly("Third", "First", "Second").inOrder()
-        assertThat(merged.map { it.xtreamStreamId }).containsExactly(30, 10, 20).inOrder()
+        assertThat(ordered.map { it.id }).containsExactly("xtream:30", "xtream:10", "xtream:20").inOrder()
+    }
+
+    @Test
+    fun unknownCategoriesAppendAfterKnownCategoriesInFirstSeenOrder() {
+        val categorizedChannels = listOf(
+            "unknown-b" to apiChannel(401, "Unknown B One", "Unknown B"),
+            "known" to apiChannel(101, "Known", "Known"),
+            "unknown-a" to apiChannel(301, "Unknown A", "Unknown A"),
+            "unknown-b" to apiChannel(402, "Unknown B Two", "Unknown B"),
+        )
+
+        val ordered = orderXtreamChannelsByProviderCategories(
+            categoryIdsInProviderOrder = listOf("known"),
+            categorizedChannels = categorizedChannels,
+        )
+
+        assertThat(ordered.map { it.id })
+            .containsExactly("xtream:101", "xtream:401", "xtream:402", "xtream:301")
+            .inOrder()
+    }
+
+    @Test
+    fun replacingOrRemovingPlaylistDropsOnlyItsSavedGroupOrder() {
+        val previous = listOf(
+            playlist("one", "https://old.example/one.m3u"),
+            playlist("two", "https://same.example/two.m3u"),
+        )
+        val current = listOf(
+            playlist("one", "https://new.example/one.m3u"),
+            playlist("two", "https://same.example/two.m3u"),
+        )
+
+        val changed = changedPlaylistSourceIds(previous, current)
+        val retained = retainGroupOrderForUnchangedSources(
+            savedOrder = listOf("one|Sports", "two|News", "one|Movies"),
+            changedPlaylistIds = changed,
+        )
+
+        assertThat(changed).containsExactly("one")
+        assertThat(retained).containsExactly("two|News")
+    }
+
+    @Test
+    fun readdingPlaylistIdAfterEmptyStateDropsStaleSavedOrder() {
+        val current = listOf(playlist("one", "https://new.example/one.m3u"))
+
+        val changed = changedPlaylistSourceIds(emptyList(), current)
+        val retained = retainGroupOrderForUnchangedSources(
+            savedOrder = listOf("one|Movies", "one|Sports"),
+            changedPlaylistIds = changed,
+        )
+
+        assertThat(changed).containsExactly("one")
+        assertThat(retained).isEmpty()
     }
 
     private fun apiChannel(
@@ -64,11 +115,9 @@ class IptvProviderOrderTest {
         catchupType = if (catchupDays > 0) "xtream" else null,
     )
 
-    private fun playlistChannel(streamId: Int, name: String, group: String): IptvChannel = IptvChannel(
-        id = "playlist-$streamId",
-        name = name,
-        streamUrl = "https://provider.test/live/user/pass/$streamId.ts",
-        group = group,
-        epgId = "epg-$streamId",
+    private fun playlist(id: String, url: String): IptvPlaylistEntry = IptvPlaylistEntry(
+        id = id,
+        name = id,
+        m3uUrl = url,
     )
 }

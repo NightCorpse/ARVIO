@@ -1,6 +1,10 @@
 package com.arflix.tv.ui.screens.tv.live
 
 import com.arflix.tv.data.model.IptvChannel
+import com.arflix.tv.data.repository.IptvConfig
+import com.arflix.tv.data.repository.IptvPlaylistEntry
+import com.arflix.tv.data.repository.orderXtreamChannelsByProviderCategories
+import com.arflix.tv.ui.screens.tv.syncSignature
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -86,6 +90,68 @@ class LiveCategoryIndexTest {
         )
 
         assertThat(result.map { it.id }).containsExactly("list:3", "list:1").inOrder()
+    }
+
+    @Test
+    fun categoryTreeKeepsProviderFirstOccurrenceOrder() {
+        val channels = listOf(
+            channel("list:9", "Nine", "Z Last alphabetically"),
+            channel("list:2", "Two", "A First alphabetically"),
+            channel("list:7", "Seven", "Middle"),
+            channel("list:8", "Eight", "Z Last alphabetically"),
+        )
+
+        val state = buildFastStartupChannelState(
+            channels = channels,
+            favorites = emptySet(),
+            recents = emptySet(),
+        )
+
+        assertThat(state.tree.global.categories.map { it.label })
+            .containsExactly("Z Last alphabetically", "A First alphabetically", "Middle")
+            .inOrder()
+    }
+
+    @Test
+    fun configSignatureChangesWhenPlaylistOrderChanges() {
+        val first = IptvPlaylistEntry("first", "First", "https://example.test/first.m3u")
+        val second = IptvPlaylistEntry("second", "Second", "https://example.test/second.m3u")
+
+        val original = IptvConfig(playlists = listOf(first, second)).syncSignature()
+        val reordered = IptvConfig(playlists = listOf(second, first)).syncSignature()
+
+        assertThat(reordered).isNotEqualTo(original)
+    }
+
+    @Test
+    fun xtreamCategoryOrderSurvivesTvIndexing() {
+        val globalStreamResponse = listOf(
+            "news" to channel("xtream:20", "News Twenty", "News").copy(xtreamStreamId = 20),
+            "sports" to channel("xtream:30", "Sports Thirty", "Sports").copy(xtreamStreamId = 30),
+            "sports" to channel("xtream:10", "Sports Ten", "Sports").copy(xtreamStreamId = 10),
+        )
+        val merged = orderXtreamChannelsByProviderCategories(
+            categoryIdsInProviderOrder = listOf("sports", "news"),
+            categorizedChannels = globalStreamResponse,
+        )
+            .map { it.copy(id = "list_1:${it.id}") }
+
+        val state = buildFastStartupChannelState(
+            channels = merged,
+            favorites = emptySet(),
+            recents = emptySet(),
+        )
+        val sportsCategory = state.tree.global.categories.single { it.label == "Sports" }
+
+        assertThat(state.all.map { it.id })
+            .containsExactly("list_1:xtream:30", "list_1:xtream:10", "list_1:xtream:20")
+            .inOrder()
+        assertThat(state.tree.global.categories.map { it.label })
+            .containsExactly("Sports", "News")
+            .inOrder()
+        assertThat(state.index.channelsFor(sportsCategory.id, emptyList(), emptyList()).map { it.id })
+            .containsExactly("list_1:xtream:30", "list_1:xtream:10")
+            .inOrder()
     }
 
     private fun channel(id: String, name: String, group: String): IptvChannel =

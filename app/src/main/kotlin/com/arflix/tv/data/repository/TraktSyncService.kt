@@ -1141,15 +1141,52 @@ class TraktSyncService @Inject constructor(
     }
 
     private suspend fun fetchAllWatchedMovies(): List<TraktWatchedMovie> {
-        return executeTraktCall("watched movies") { auth ->
-            traktApi.getWatchedMovies(auth, clientId)
+        val all = mutableListOf<TraktWatchedMovie>()
+        var page = 1
+        val limit = 250
+
+        while (true) {
+            val pageItems = executeTraktCall("watched movies page $page") { auth ->
+                traktApi.getWatchedMovies(
+                    auth = auth,
+                    clientId = clientId,
+                    version = "2",
+                    page = page,
+                    limit = limit
+                )
+            }
+            if (pageItems.isEmpty()) break
+            all.addAll(pageItems)
+            if (pageItems.size < limit) break
+            page++
         }
+
+        return all
     }
 
     private suspend fun fetchAllWatchedShows(): List<TraktWatchedShow> {
-        return executeTraktCall("watched shows") { auth ->
-            traktApi.getWatchedShows(auth, clientId)
+        val all = mutableListOf<TraktWatchedShow>()
+        var page = 1
+        val limit = 250
+
+        while (true) {
+            val pageItems = executeTraktCall("watched shows page $page") { auth ->
+                traktApi.getWatchedShows(
+                    auth = auth,
+                    clientId = clientId,
+                    version = "2",
+                    page = page,
+                    limit = limit,
+                    extended = "progress"
+                )
+            }
+            if (pageItems.isEmpty()) break
+            all.addAll(pageItems)
+            if (pageItems.size < limit) break
+            page++
         }
+
+        return all
     }
 
     private suspend fun fetchAllHistoryMovies(startAt: String?): List<TraktHistoryItem> {

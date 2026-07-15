@@ -139,6 +139,7 @@ private object IptvIdSentinels {
 }
 
 private const val LargeIptvListChannelCount = 10_000
+internal const val IPTV_GROUP_ORDER_SCHEMA = 3
 
 data class IptvConfig(
     val m3uUrl: String = "",
@@ -169,6 +170,7 @@ data class IptvCloudProfileState(
     val favoriteChannels: List<String> = emptyList(),
     val hiddenGroups: List<String> = emptyList(),
     val groupOrder: List<String> = emptyList(),
+    val groupOrderSchema: Int = 0,
     val playlists: List<IptvPlaylistEntry> = emptyList(),
     val tvSession: IptvTvSessionState = IptvTvSessionState()
 )
@@ -495,6 +497,8 @@ class IptvRepository @Inject constructor(
     }
 
     suspend fun saveConfig(m3uUrl: String, epgUrl: String) {
+        val profileId = profileManager.getProfileIdSync()
+        val previousConfig = observeConfig().first()
         val normalizedM3u = normalizeStoredIptvUrl(m3uUrl)
         val normalizedEpgUrls = normalizeStoredEpgInputs(epgUrl)
         val normalizedEpg = normalizedEpgUrls.firstOrNull().orEmpty()
@@ -507,38 +511,92 @@ class IptvRepository @Inject constructor(
                 epgUrls = normalizedEpgUrls
             )
         ) else emptyList()
+        val nextConfig = previousConfig.copy(
+            m3uUrl = normalizedM3u,
+            epgUrl = normalizedEpg,
+            playlists = primary,
+        )
+        val previousSourceKey = epgIndexKey(profileId, previousConfig)
+        val sourceChanged = buildSourceSignature(previousConfig) != buildSourceSignature(nextConfig)
         context.settingsDataStore.edit { prefs ->
+            val previous = decodePlaylists(prefs[playlistsKey()].orEmpty())
+            val changedSourceIds = changedPlaylistSourceIds(previous, primary)
             prefs[m3uUrlKey()] = encryptConfigValue(normalizedM3u)
             prefs[epgUrlKey()] = encryptConfigValue(normalizedEpg)
             prefs[playlistsKey()] = gson.toJson(primary)
+            val retainedOrder = retainGroupOrderForUnchangedSources(
+                decodeGroupOrder(prefs),
+                changedSourceIds,
+            )
+            if (retainedOrder.isEmpty()) prefs.remove(groupOrderKey())
+            else prefs[groupOrderKey()] = gson.toJson(retainedOrder)
+            prefs[groupOrderSchemaKey()] = IPTV_GROUP_ORDER_SCHEMA.toString()
+        }
+        groupOrderLocallyDirty = true
+        if (sourceChanged) {
+            withContext(Dispatchers.IO) { deletePersistedSourceCaches(previousSourceKey) }
         }
         invalidateCache()
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "save iptv config")
     }
 
     suspend fun savePlaylists(playlists: List<IptvPlaylistEntry>) {
+        val profileId = profileManager.getProfileIdSync()
+        val previousConfig = observeConfig().first()
         val normalized = playlists.mapIndexed { index, item ->
             normalizePlaylistEntry(item, index)
         }.filterNotNull().take(3)
+        val primary = normalized.firstOrNull()
+        val nextConfig = previousConfig.copy(
+            m3uUrl = primary?.m3uUrl.orEmpty(),
+            epgUrl = primary?.epgUrl.orEmpty(),
+            playlists = normalized,
+        )
+        val previousSourceKey = epgIndexKey(profileId, previousConfig)
+        val sourceChanged = buildSourceSignature(previousConfig) != buildSourceSignature(nextConfig)
 
         context.settingsDataStore.edit { prefs ->
+            val previous = decodePlaylists(prefs[playlistsKey()].orEmpty())
+            val changedSourceIds = changedPlaylistSourceIds(previous, normalized)
             prefs[playlistsKey()] = gson.toJson(normalized)
-            val primary = normalized.firstOrNull()
             prefs[m3uUrlKey()] = encryptConfigValue(primary?.m3uUrl.orEmpty())
             prefs[epgUrlKey()] = encryptConfigValue(primary?.epgUrl.orEmpty())
+            val retainedOrder = retainGroupOrderForUnchangedSources(
+                decodeGroupOrder(prefs),
+                changedSourceIds,
+            )
+            if (retainedOrder.isEmpty()) prefs.remove(groupOrderKey())
+            else prefs[groupOrderKey()] = gson.toJson(retainedOrder)
+            prefs[groupOrderSchemaKey()] = IPTV_GROUP_ORDER_SCHEMA.toString()
+        }
+        groupOrderLocallyDirty = true
+        if (sourceChanged) {
+            withContext(Dispatchers.IO) { deletePersistedSourceCaches(previousSourceKey) }
         }
         invalidateCache()
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "save iptv playlists")
     }
 
     suspend fun saveStalkerConfig(portalUrl: String, macAddress: String) {
+        val profileId = profileManager.getProfileIdSync()
+        val previousConfig = observeConfig().first()
         val normalizedUrl = portalUrl.trim().trimEnd('/')
         val normalizedMac = macAddress.trim().uppercase().let { mac ->
             if (mac.isNotEmpty() && !mac.startsWith("00:1A:79:")) mac else mac
         }
+        val nextConfig = previousConfig.copy(
+            stalkerPortalUrl = normalizedUrl,
+            stalkerMacAddress = normalizedMac,
+        )
+        val previousSourceKey = epgIndexKey(profileId, previousConfig)
+        val sourceChanged = buildSourceSignature(previousConfig) != buildSourceSignature(nextConfig)
         context.settingsDataStore.edit { prefs ->
             prefs[stalkerPortalUrlKey()] = encryptConfigValue(normalizedUrl)
             prefs[stalkerMacAddressKey()] = normalizedMac
+        }
+        groupOrderLocallyDirty = true
+        if (sourceChanged) {
+            withContext(Dispatchers.IO) { deletePersistedSourceCaches(previousSourceKey) }
         }
         invalidateCache()
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "save stalker config")
@@ -1280,6 +1338,9 @@ class IptvRepository @Inject constructor(
         urlEncodeQuery(value).replace("%3A", ":")
 
     suspend fun clearConfig() {
+        val profileId = profileManager.getProfileIdSync()
+        val previousConfig = observeConfig().first()
+        val previousSourceKey = epgIndexKey(profileId, previousConfig)
         context.settingsDataStore.edit { prefs ->
             prefs.remove(m3uUrlKey())
             prefs.remove(epgUrlKey())
@@ -1288,10 +1349,12 @@ class IptvRepository @Inject constructor(
             prefs.remove(favoriteChannelsKey())
             prefs.remove(hiddenGroupsKey())
             prefs.remove(groupOrderKey())
+            prefs.remove(groupOrderSchemaKey())
             prefs.remove(tvSessionKey())
         }
+        groupOrderLocallyDirty = true
+        withContext(Dispatchers.IO) { deletePersistedSourceCaches(previousSourceKey) }
         invalidateCache()
-        runCatching { cacheFile().delete() }
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "clear iptv config")
     }
 
@@ -1395,6 +1458,7 @@ class IptvRepository @Inject constructor(
             val idx = order.indexOf(target)
             if (idx > 0) { order.removeAt(idx); order.add(idx - 1, target) }
             prefs[groupOrderKey()] = gson.toJson(order)
+            prefs[groupOrderSchemaKey()] = IPTV_GROUP_ORDER_SCHEMA.toString()
         }
         groupOrderLocallyDirty = true
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "move group up")
@@ -1411,6 +1475,7 @@ class IptvRepository @Inject constructor(
             order.remove(target)
             order.add(0, target)
             prefs[groupOrderKey()] = gson.toJson(order)
+            prefs[groupOrderSchemaKey()] = IPTV_GROUP_ORDER_SCHEMA.toString()
         }
         groupOrderLocallyDirty = true
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "move group to top")
@@ -1426,6 +1491,7 @@ class IptvRepository @Inject constructor(
             val idx = order.indexOf(target)
             if (idx >= 0 && idx < order.size - 1) { order.removeAt(idx); order.add(idx + 1, target) }
             prefs[groupOrderKey()] = gson.toJson(order)
+            prefs[groupOrderSchemaKey()] = IPTV_GROUP_ORDER_SCHEMA.toString()
         }
         groupOrderLocallyDirty = true
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "move group down")
@@ -1436,6 +1502,7 @@ class IptvRepository @Inject constructor(
             val existing = decodeGroupOrder(prefs).toMutableList()
             existing.removeAll { PlaylistGroupKey(it).playlistId == playlistId }
             prefs[groupOrderKey()] = gson.toJson(existing)
+            prefs[groupOrderSchemaKey()] = IPTV_GROUP_ORDER_SCHEMA.toString()
         }
         groupOrderLocallyDirty = true
         invalidationBus.markDirty(CloudSyncScope.IPTV, profileManager.getProfileIdSync(), "reset group order")
@@ -2705,12 +2772,23 @@ class IptvRepository @Inject constructor(
      * Unlike [invalidateCache], this also deletes the disk catalogs so that
      * [warmXtreamVodCachesIfPossible] is guaranteed to re-fetch from network.
      */
-    fun purgeAllIptvSourceCaches() {
+    suspend fun purgeAllIptvSourceCaches() {
+        val sourceKey = currentEpgIndexKey
         invalidateCache()
-        runCatching { seriesResolver.clearAll() }
-        runCatching {
-            xtreamDiskCacheDir().listFiles()?.forEach { it.delete() }
+        withContext(Dispatchers.IO) {
+            deletePersistedSourceCaches(sourceKey)
+            runCatching { seriesResolver.clearAll() }
+            runCatching {
+                xtreamDiskCacheDir().listFiles()?.forEach { it.delete() }
+            }
         }
+    }
+
+    private fun deletePersistedSourceCaches(sourceKey: String) {
+        runCatching { channelStore.deleteSource(sourceKey) }
+        runCatching { epgIndex.deleteSource(sourceKey) }
+        runCatching { cacheFile().delete() }
+        runCatching { channelCacheFile().delete() }
     }
 
     private fun ensureCacheOwnership(profileId: String, config: IptvConfig) {
@@ -2773,6 +2851,10 @@ class IptvRepository @Inject constructor(
     private fun groupOrderKey(): Preferences.Key<String> = profileManager.profileStringKey("iptv_group_order")
     private fun groupOrderKeyFor(profileId: String): Preferences.Key<String> =
         profileManager.profileStringKeyFor(profileId, "iptv_group_order")
+    private fun groupOrderSchemaKey(): Preferences.Key<String> =
+        profileManager.profileStringKey("iptv_group_order_schema")
+    private fun groupOrderSchemaKeyFor(profileId: String): Preferences.Key<String> =
+        profileManager.profileStringKeyFor(profileId, "iptv_group_order_schema")
     private fun playlistsKeyFor(profileId: String): Preferences.Key<String> =
         profileManager.profileStringKeyFor(profileId, "iptv_playlists_json")
     private fun tvSessionKey(): Preferences.Key<String> = profileManager.profileStringKey("iptv_tv_session")
@@ -2801,6 +2883,7 @@ class IptvRepository @Inject constructor(
     }
 
     private fun decodeGroupOrder(prefs: Preferences): List<String> {
+        if (prefs[groupOrderSchemaKey()]?.toIntOrNull() != IPTV_GROUP_ORDER_SCHEMA) return emptyList()
         val raw = prefs[groupOrderKey()].orEmpty()
         if (raw.isBlank()) return emptyList()
         return runCatching {
@@ -2903,6 +2986,7 @@ class IptvRepository @Inject constructor(
         val prefs = context.settingsDataStore.data.first()
         val hiddenRaw = prefs[hiddenGroupsKeyFor(safeProfileId)].orEmpty()
         val orderRaw = prefs[groupOrderKeyFor(safeProfileId)].orEmpty()
+        val orderSchema = prefs[groupOrderSchemaKeyFor(safeProfileId)]?.toIntOrNull() ?: 0
         val playlistsRaw = prefs[playlistsKeyFor(safeProfileId)].orEmpty()
         val tvSessionRaw = prefs[tvSessionKeyFor(safeProfileId)].orEmpty()
         val playlists = decodePlaylists(playlistsRaw)
@@ -2920,12 +3004,13 @@ class IptvRepository @Inject constructor(
                     gson.fromJson<List<String>>(hiddenRaw, type) ?: emptyList()
                 }.getOrDefault(emptyList())
             } else emptyList(),
-            groupOrder = if (orderRaw.isNotBlank()) {
+            groupOrder = if (orderSchema == IPTV_GROUP_ORDER_SCHEMA && orderRaw.isNotBlank()) {
                 runCatching {
                     val type = TypeToken.getParameterized(List::class.java, String::class.java).type
                     gson.fromJson<List<String>>(orderRaw, type) ?: emptyList()
                 }.getOrDefault(emptyList())
             } else emptyList(),
+            groupOrderSchema = IPTV_GROUP_ORDER_SCHEMA,
             playlists = playlists,
             tvSession = decodeTvSessionState(tvSessionRaw)
         )
@@ -2939,6 +3024,24 @@ class IptvRepository @Inject constructor(
         val normalizedPlaylists = state.playlists.mapIndexed { index, playlist ->
             normalizePlaylistEntry(playlist, index)
         }.filterNotNull().take(3)
+        val effectivePlaylists = normalizedPlaylists.ifEmpty {
+            if (normalizedM3u.isBlank()) emptyList() else listOf(
+                IptvPlaylistEntry(
+                    id = "list_1",
+                    name = "List 1",
+                    m3uUrl = normalizedM3u,
+                    epgUrl = normalizedEpg,
+                    epgUrls = normalizedEpgUrls,
+                )
+            )
+        }
+        val validPlaylistIds = effectivePlaylists.mapTo(HashSet()) { it.id }
+        val normalizedGroupOrder = state.groupOrder
+            .takeIf { state.groupOrderSchema >= IPTV_GROUP_ORDER_SCHEMA }
+            .orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && PlaylistGroupKey(it).playlistId in validPlaylistIds }
+            .distinct()
         context.settingsDataStore.edit { prefs ->
             prefs[m3uUrlKeyFor(safeProfileId)] = encryptConfigValue(normalizedM3u)
             prefs[epgUrlKeyFor(safeProfileId)] = encryptConfigValue(normalizedEpg)
@@ -2947,12 +3050,11 @@ class IptvRepository @Inject constructor(
             if (state.hiddenGroups.isNotEmpty()) {
                 prefs[hiddenGroupsKeyFor(safeProfileId)] = gson.toJson(state.hiddenGroups.distinct())
             }
-            if (state.groupOrder.isNotEmpty()) {
-                prefs[groupOrderKeyFor(safeProfileId)] = gson.toJson(state.groupOrder.distinct())
-            }
-            if (normalizedPlaylists.isNotEmpty()) {
-                prefs[playlistsKeyFor(safeProfileId)] = gson.toJson(normalizedPlaylists)
-            }
+            if (normalizedGroupOrder.isEmpty()) prefs.remove(groupOrderKeyFor(safeProfileId))
+            else prefs[groupOrderKeyFor(safeProfileId)] = gson.toJson(normalizedGroupOrder)
+            prefs[groupOrderSchemaKeyFor(safeProfileId)] = IPTV_GROUP_ORDER_SCHEMA.toString()
+            if (effectivePlaylists.isEmpty()) prefs.remove(playlistsKeyFor(safeProfileId))
+            else prefs[playlistsKeyFor(safeProfileId)] = gson.toJson(effectivePlaylists)
             if (state.tvSession != IptvTvSessionState()) {
                 prefs[tvSessionKeyFor(safeProfileId)] = gson.toJson(
                     state.tvSession.copy(
@@ -2982,27 +3084,12 @@ class IptvRepository @Inject constructor(
     ): List<IptvChannel> {
         resolveXtreamCredentials(playlist)?.let { creds ->
             onProgress(IptvLoadProgress(context.getString(R.string.iptv_xtream_detected), 6))
-            val (playlistResult, apiResult) = coroutineScope {
-                val providerPlaylist = async(Dispatchers.IO) {
-                    runCatching {
-                        fetchAndParseM3uOnce(
-                            url = normalizeStoredIptvUrl(playlist.m3uUrl),
-                            onProgress = onProgress,
-                            client = iptvCatalogHttpClient,
-                        )
-                    }.getOrDefault(emptyList())
-                }
-                val providerApi = async(Dispatchers.IO) {
-                    runCatching {
-                        withTimeoutOrNull(120_000L) {
-                            fetchXtreamLiveChannels(creds, onProgress)
-                        } ?: throw IllegalStateException(context.getString(R.string.iptv_xtream_timeout))
-                    }.getOrDefault(emptyList())
-                }
-                providerPlaylist.await() to providerApi.await()
+            val apiResult = runCatching {
+                withTimeoutOrNull(60_000L) {
+                    fetchXtreamLiveChannels(creds, onProgress)
+                } ?: throw IllegalStateException(context.getString(R.string.iptv_xtream_timeout))
             }
-
-            val providerOrdered = mergeXtreamChannelsInProviderOrder(playlistResult, apiResult)
+            val providerOrdered = apiResult.getOrDefault(emptyList())
             if (providerOrdered.isNotEmpty()) {
                 onProgress(
                     IptvLoadProgress(
@@ -3011,6 +3098,9 @@ class IptvRepository @Inject constructor(
                     )
                 )
                 return providerOrdered
+            }
+            apiResult.exceptionOrNull()?.let { error ->
+                System.err.println("IptvRepository: Xtream catalog unavailable; falling back to M3U: ${error.message}")
             }
         }
         return fetchAndParseM3uWithRetries(playlist.m3uUrl, onProgress)
@@ -5250,8 +5340,14 @@ class IptvRepository @Inject constructor(
                 TypeToken.getParameterized(List::class.java, XtreamLiveCategory::class.java).type,
                 client = iptvCatalogHttpClient
             ) ?: emptyList()
-        val categoryMap = categories
-            .associate { it.categoryId.orEmpty() to (it.categoryName?.trim().orEmpty().ifBlank { "Uncategorized" }) }
+        val categoryMap = LinkedHashMap<String, String>(categories.size)
+        val categoryOrder = ArrayList<String>(categories.size)
+        categories.forEach { category ->
+            val categoryId = category.categoryId.orEmpty().trim()
+            if (categoryId.isBlank() || categoryId in categoryMap) return@forEach
+            categoryMap[categoryId] = category.categoryName?.trim().orEmpty().ifBlank { "Uncategorized" }
+            categoryOrder += categoryId
+        }
 
         onProgress(IptvLoadProgress(context.getString(R.string.iptv_progress_loading_live), 35))
         val streams: List<XtreamLiveStream> =
@@ -5263,7 +5359,7 @@ class IptvRepository @Inject constructor(
         if (streams.isEmpty()) return emptyList()
 
         val total = streams.size.coerceAtLeast(1)
-        return streams.mapIndexedNotNull { index, stream ->
+        val categorizedChannels = streams.mapIndexedNotNull { index, stream ->
             if (index % 500 == 0) {
                 val pct = (35 + ((index.toLong() * 55L) / total.toLong())).toInt().coerceIn(35, 90)
                 onProgress(IptvLoadProgress("Parsing provider streams... $index/$total", pct))
@@ -5271,10 +5367,11 @@ class IptvRepository @Inject constructor(
 
             val streamId = stream.streamId ?: return@mapIndexedNotNull null
             val name = stream.name?.trim().orEmpty().ifBlank { return@mapIndexedNotNull null }
-            val group = categoryMap[stream.categoryId.orEmpty()].orEmpty().ifBlank { "Uncategorized" }
+            val categoryId = stream.categoryId.orEmpty().trim()
+            val group = categoryMap[categoryId].orEmpty().ifBlank { "Uncategorized" }
             val streamUrl = "${creds.baseUrl}/live/${creds.username}/${creds.password}/$streamId.ts"
 
-            IptvChannel(
+            categoryId to IptvChannel(
                 id = "xtream:$streamId",
                 name = name,
                 streamUrl = streamUrl,
@@ -5288,6 +5385,7 @@ class IptvRepository @Inject constructor(
                 catchupType = if ((stream.tvArchive ?: 0) > 0 || (stream.tvArchiveDuration ?: 0) > 0) "xtream" else null
             )
         }
+        return orderXtreamChannelsByProviderCategories(categoryOrder, categorizedChannels)
     }
 
     private suspend fun <T> requestJson(
@@ -7523,7 +7621,7 @@ class IptvRepository @Inject constructor(
             ).joinToString("|")
         }
         val raw = listOf(
-            "playlist-group-prefix-v3-catchup-history-48h",
+            "playlist-group-prefix-v5-xtream-category-order-catchup-history-48h",
             config.m3uUrl.trim(),
             config.epgUrl.trim(),
             config.stalkerPortalUrl.trim(),
@@ -7545,7 +7643,7 @@ class IptvRepository @Inject constructor(
             ).joinToString("|")
         }
         val raw = listOf(
-            "playlist-sources-v2-catchup-history-48h",
+            "playlist-sources-v4-xtream-category-order-catchup-history-48h",
             config.m3uUrl.trim(),
             config.stalkerPortalUrl.trim(),
             config.stalkerMacAddress.trim(),

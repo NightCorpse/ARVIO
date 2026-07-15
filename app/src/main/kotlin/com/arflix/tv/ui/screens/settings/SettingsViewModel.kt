@@ -3148,7 +3148,6 @@ class SettingsViewModel @Inject constructor(
 
 private fun IptvConfig.syncSignature(): String {
     val playlistsSignature = playlists
-        .sortedBy { it.id }
         .joinToString("|") { playlist ->
             listOf(
                 playlist.id,

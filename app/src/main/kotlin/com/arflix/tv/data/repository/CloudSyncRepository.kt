@@ -811,9 +811,11 @@ class CloudSyncRepository @Inject constructor(
                 val profileId = remoteKeys.next()
                 val remoteProfile = remoteByProfile.optJSONObject(profileId) ?: continue
                 val localProfile = localByProfile.optJSONObject(profileId) ?: continue
+                if (remoteProfile.optInt("groupOrderSchema", 0) < IPTV_GROUP_ORDER_SCHEMA) continue
                 val remoteGroupOrder = remoteProfile.optJSONArray("groupOrder") ?: continue
                 if (remoteGroupOrder.length() > 0) {
                     localProfile.put("groupOrder", remoteGroupOrder)
+                    localProfile.put("groupOrderSchema", remoteProfile.optInt("groupOrderSchema"))
                 }
             }
             local.toString()

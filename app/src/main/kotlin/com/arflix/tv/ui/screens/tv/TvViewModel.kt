@@ -2296,9 +2296,8 @@ private fun looksLikeStalkerStreamCommand(url: String): Boolean {
         trimmed.contains("create_link", ignoreCase = true)
 }
 
-private fun IptvConfig.syncSignature(): String {
+internal fun IptvConfig.syncSignature(): String {
     val playlistsSignature = playlists
-        .sortedBy { it.id }
         .joinToString("|") { playlist ->
             listOf(
                 playlist.id,
