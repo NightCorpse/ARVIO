@@ -912,6 +912,7 @@ fun DetailsScreen(
                         isInWatchlist = uiState.isInWatchlist,
                         genres = uiState.genres,
                         budget = uiState.budget,
+                        revenue = uiState.revenue,
                         externalRatings = uiState.externalRatings,
                         seasonProgress = uiState.seasonProgress,
                         episodePlaybackProgress = uiState.episodePlaybackProgress,
@@ -1136,6 +1137,7 @@ private fun DetailsContent(
     isInWatchlist: Boolean,
     genres: List<String> = emptyList(),
     budget: String? = null,
+    revenue: String? = null,
     externalRatings: List<MdbExternalRating> = emptyList(),
     seasonProgress: Map<Int, Pair<Int, Int>> = emptyMap(),
     episodePlaybackProgress: Map<EpisodeIdentity, EpisodePlaybackProgress> = emptyMap(),
@@ -2070,9 +2072,12 @@ private fun DetailsContent(
                 val primaryNetworkLogo = item.primaryNetworkLogo?.takeIf { it.isNotBlank() }
                 val budgetText = budget?.trim()?.takeIf { it.isNotEmpty() && item.mediaType == MediaType.MOVIE }
                 val hasBudgetMetadata = !budgetText.isNullOrBlank()
+                val revenueText = revenue?.trim()?.takeIf { it.isNotEmpty() && item.mediaType == MediaType.MOVIE }
+                val hasRevenueMetadata = !revenueText.isNullOrBlank()
                 val hasSecondaryMetadata = primaryNetworkLogo != null ||
                     hasRatingMetadata ||
-                    hasBudgetMetadata
+                    hasBudgetMetadata ||
+                    hasRevenueMetadata
                 val overviewMaxHeight = if (isCompactHeight) 58.dp else 68.dp
 
                 val separatorStyle = ArflixTypography.caption.copy(
@@ -2170,7 +2175,7 @@ private fun DetailsContent(
                                         .width(52.dp)
                                 )
 
-                                if (hasRatingMetadata || hasBudgetMetadata) {
+                                if (hasRatingMetadata || hasBudgetMetadata || hasRevenueMetadata) {
                                     Text(text = "|", style = separatorStyle, color = Color.White.copy(alpha = 0.58f))
                                 }
                             }
@@ -2185,24 +2190,43 @@ private fun DetailsContent(
                                     textShadow = textShadow
                                 )
 
-                                if (hasBudgetMetadata) {
+                                if (hasBudgetMetadata || hasRevenueMetadata) {
                                     Text(text = "|", style = separatorStyle, color = Color.White.copy(alpha = 0.58f))
                                 }
                             }
 
-                            if (hasBudgetMetadata) {
-                                Text(
-                                    text = "${stringResource(R.string.budget)} $budgetText",
-                                    style = ArflixTypography.caption.copy(
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        shadow = textShadow
-                                    ),
-                                    color = Color.White.copy(alpha = 0.74f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                            if (hasBudgetMetadata || hasRevenueMetadata) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
                                     modifier = Modifier.weight(1f, fill = false)
-                                )
+                                ) {
+                                    if (hasBudgetMetadata) {
+                                        Text(
+                                            text = "${stringResource(R.string.budget)} $budgetText",
+                                            style = ArflixTypography.caption.copy(
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                shadow = textShadow
+                                            ),
+                                            color = Color.White.copy(alpha = 0.74f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (hasRevenueMetadata) {
+                                        Text(
+                                            text = "${stringResource(R.string.revenue)} $revenueText",
+                                            style = ArflixTypography.caption.copy(
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                shadow = textShadow
+                                            ),
+                                            color = Color.White.copy(alpha = 0.74f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

@@ -118,6 +118,7 @@ data class DetailsUiState(
     val language: String? = null,
     // Budget (movies only)
     val budget: String? = null,
+    val revenue: String? = null,
     // Show status
     val showStatus: String? = null,
     // Streaming services from TMDB watch providers
@@ -716,11 +717,15 @@ class DetailsViewModel @Inject constructor(
                 // Get language name
                 val languageName = mergedItem.originalLanguage?.let { languages[it] ?: it.uppercase() }
 
-                // Format budget for movies
+                // Format budget and revenue for movies
                 val budgetDisplay = if (mediaType == MediaType.MOVIE && mergedItem.budget != null && mergedItem.budget > 0) {
                     formatBudget(mergedItem.budget)
                 } else null
+                val revenueDisplay = if (mediaType == MediaType.MOVIE && mergedItem.revenue != null && mergedItem.revenue > 0) {
+                    formatBudget(mergedItem.revenue)
+                } else null
                 val visibleBudget = if (showBudget) budgetDisplay else null
+                val visibleRevenue = if (showBudget) revenueDisplay else null
 
                 // Get show status
                 val showStatus = if (mediaType == MediaType.TV) mergedItem.status else null
@@ -753,6 +758,7 @@ class DetailsViewModel @Inject constructor(
                     genres = genreNames,
                     language = languageName,
                     budget = visibleBudget,
+                    revenue = visibleRevenue,
                     showStatus = showStatus,
                     playSeason = displayTarget?.displaySeason ?: _uiState.value.playSeason,
                     playEpisode = displayTarget?.displayEpisode ?: _uiState.value.playEpisode,
