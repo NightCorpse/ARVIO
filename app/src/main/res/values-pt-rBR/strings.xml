@@ -52,6 +52,7 @@
     <string name="on">Ligado</string>
     <string name="auto">Auto</string>
     <string name="budget">Orçamento</string>
+    <string name="revenue">Bilheteria</string>
     <string name="ongoing">Em andamento</string>
     <string name="finding_sources">Procurando fontes...</string>
     <string name="available_sources">Fontes disponíveis</string>
