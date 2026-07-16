@@ -3335,6 +3335,7 @@ private fun TmdbMovieDetails.toMediaItem(): MediaItem {
         originalLanguage = originalLanguage,
         originalTitle = originalTitle?.takeIf { it.isNotBlank() },
         budget = budget,
+        revenue = revenue,
         genreIds = genres.map { it.id }
     )
 }
