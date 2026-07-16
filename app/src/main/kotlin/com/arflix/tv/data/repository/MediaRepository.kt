@@ -3681,6 +3681,7 @@ private fun TmdbMovieDetails.toMediaItem(): MediaItem {
         backdrop = backdropPath?.let { "${Constants.BACKDROP_BASE_LARGE}$it" },
         originalLanguage = originalLanguage,
         budget = budget,
+        revenue = revenue,
         genreIds = genres.map { it.id }
     )
 }
