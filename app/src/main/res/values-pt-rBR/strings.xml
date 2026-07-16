@@ -103,6 +103,7 @@
     <string name="off">Desligado</string>
     <string name="on">Ligado</string>
     <string name="auto">Auto</string>
+    <string name="revenue">Bilheteria</string>
 
     <!-- State -->
     <string name="loading">Carregando…</string>
