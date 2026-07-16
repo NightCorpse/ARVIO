@@ -1716,9 +1716,12 @@ private fun HeroSection(
 
 private fun formatBudgetCompact(budget: Long): String {
     return when {
-        budget >= 1_000_000_000 -> "$${budget / 1_000_000_000.0}B"
-        budget >= 1_000_000 -> "$${budget / 1_000_000}M"
-        budget >= 1_000 -> "$${budget / 1_000}K"
+        budget >= 1_000_000_000 -> {
+            val formatted = String.format(java.util.Locale.US, "%.1f", budget / 1_000_000_000.0)
+            "$${formatted.removeSuffix(".0")}B"
+        }
+        budget >= 1_000_000 -> "$${String.format(java.util.Locale.US, "%.0f", budget / 1_000_000.0)}M"
+        budget >= 1_000 -> "$${String.format(java.util.Locale.US, "%.0f", budget / 1_000.0)}K"
         else -> "$$budget"
     }
 }
