@@ -164,9 +164,12 @@ private val languages = mapOf(
  */
 private fun formatBudget(budget: Long): String {
     return when {
-        budget >= 1_000_000_000 -> "$${budget / 1_000_000_000.0}B"
-        budget >= 1_000_000 -> "$${budget / 1_000_000}M"
-        budget >= 1_000 -> "$${budget / 1_000}K"
+        budget >= 1_000_000_000 -> {
+            val df = java.text.DecimalFormat("#.#", java.text.DecimalFormatSymbols(java.util.Locale.US))
+            "$${df.format(budget / 1_000_000_000.0)}B"
+        }
+        budget >= 1_000_000 -> "$${Math.round(budget / 1_000_000.0)}M"
+        budget >= 1_000 -> "$${Math.round(budget / 1_000.0)}K"
         else -> "$$budget"
     }
 }
