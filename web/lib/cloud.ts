@@ -538,15 +538,28 @@ function androidContinueWatchingItems(root: RawPayload, profileId?: string | nul
   });
 }
 
-/** Read the full account_sync_state payload object (shared with Android). */
-export async function pullRawPayload(auth: AuthClient): Promise<RawPayload> {
-  if (!auth.session) return {};
+// A single app refresh calls pullRawPayload five times (payload, trakt token,
+// continue watching, watchlist, profiles) — all reading the SAME account-sync
+// document. Deduplicate: one in-flight pull is shared by all callers, and its
+// result is cached briefly so the near-simultaneous reads become ONE backend
+// (Netlify function) invocation instead of five. This is the single biggest
+// per-user-per-session cut on the auth backend. Writes clear the cache so the
+// next read is fresh.
+let rawPayloadCache: { userId: string; at: number; payload: RawPayload } | null = null;
+let rawPayloadInFlight: { userId: string; promise: Promise<RawPayload> } | null = null;
+const RAW_PAYLOAD_TTL_MS = 5_000;
+
+export function invalidateRawPayloadCache() {
+  rawPayloadCache = null;
+}
+
+async function fetchRawPayload(auth: AuthClient): Promise<RawPayload> {
   if (canUseBackendSync(auth)) {
     const response = await backendRequest<AccountSyncPullResponse>(auth, "account-sync-pull", { method: "GET" });
     return parsePayload(response.payload);
   }
   const rows = await auth.supabase<Array<{ payload?: string | null }>>(
-    `/rest/v1/account_sync_state?user_id=eq.${auth.session.userId}&select=user_id,payload,updated_at`
+    `/rest/v1/account_sync_state?user_id=eq.${auth.session!.userId}&select=user_id,payload,updated_at`
   );
   const raw = rows[0]?.payload;
   if (!raw) return {};
@@ -557,10 +570,35 @@ export async function pullRawPayload(auth: AuthClient): Promise<RawPayload> {
   }
 }
 
+/** Read the full account_sync_state payload object (shared with Android). */
+export async function pullRawPayload(auth: AuthClient): Promise<RawPayload> {
+  if (!auth.session) return {};
+  const userId = auth.session.userId;
+  if (rawPayloadCache && rawPayloadCache.userId === userId && Date.now() - rawPayloadCache.at < RAW_PAYLOAD_TTL_MS) {
+    return rawPayloadCache.payload;
+  }
+  if (rawPayloadInFlight && rawPayloadInFlight.userId === userId) {
+    return rawPayloadInFlight.promise;
+  }
+  const promise = fetchRawPayload(auth)
+    .then((payload) => {
+      rawPayloadCache = { userId, at: Date.now(), payload };
+      return payload;
+    })
+    .finally(() => {
+      if (rawPayloadInFlight?.promise === promise) rawPayloadInFlight = null;
+    });
+  rawPayloadInFlight = { userId, promise };
+  return promise;
+}
+
 async function writeRawPayload(auth: AuthClient, payload: RawPayload) {
   if (!auth.session) return;
   payload.userId = auth.session.userId;
   payload.updatedAt = Date.now();
+  // The payload we just wrote is now authoritative — seed the read cache with it
+  // so an immediate follow-up read is served locally instead of round-tripping.
+  rawPayloadCache = { userId: auth.session.userId, at: Date.now(), payload };
   if (canUseBackendSync(auth)) {
     await backendRequest(auth, "account-sync-push", {
       method: "POST",

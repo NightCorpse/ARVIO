@@ -495,6 +495,10 @@ export function AppProvider({
   const [cloudProfilesHydrated, setCloudProfilesHydrated] = useState(() => !authClient.session);
   const refreshInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
   const iptvGuideInFlightRef = useRef(new Set<string>());
+  // Snapshot of the settings last known to match the cloud, so the autosave
+  // effect can skip pushing settings that just CAME from the cloud (an echo
+  // write every app boot = a wasted account-sync-push per user per session).
+  const lastSyncedSettingsRef = useRef<string | null>(null);
 
   const [profiles, setProfiles] = useState<Profile[]>(() => {
     const stored = loadStored<Profile[]>(PROFILES_KEY, []);
@@ -609,6 +613,9 @@ export function AppProvider({
           groupOrder: cloud.settings?.groupOrder ?? currentSettings.groupOrder
         };
         if (!sameSettings(settingsRef.current, effectiveSettings)) setSettings(effectiveSettings);
+        // Record what we just synced FROM the cloud (same shape the autosave
+        // effect compares against) so it doesn't push it straight back.
+        lastSyncedSettingsRef.current = JSON.stringify({ settings: effectiveSettings, activeProfileId: profileId });
         savePlaylists(effectiveSettings.iptvPlaylists);
       }
       // Addon-wipe protection. Prefer cloud, fall back to local, but NEVER let a
@@ -825,7 +832,17 @@ export function AppProvider({
     saveStored(settingsKey, settings);
     savePlaylists(settings.iptvPlaylists);
     if (authClient.session && !cloudProfilesHydrated) return;
+    // Skip the cloud push when settings + active profile still match what we
+    // last synced from the cloud — otherwise every boot echoes the just-pulled
+    // settings straight back, a wasted account-sync-push per user per session. A
+    // genuine change (user toggled a setting, switched profile) differs from the
+    // snapshot and still saves.
+    const snapshot = JSON.stringify({ settings, activeProfileId });
+    if (lastSyncedSettingsRef.current !== null && snapshot === lastSyncedSettingsRef.current) {
+      return;
+    }
     const handle = setTimeout(() => {
+      lastSyncedSettingsRef.current = JSON.stringify({ settings: settingsRef.current, activeProfileId });
       void saveCloudSettings(authClient, settingsRef.current, addonsRef.current, activeProfileId, profiles).catch(() => undefined);
     }, 1200);
     return () => clearTimeout(handle);
