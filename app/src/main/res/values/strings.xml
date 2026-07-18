@@ -183,6 +183,8 @@
     <string name="clock_format_desc">Choose 12-hour or 24-hour time</string>
     <string name="show_budget_desc">Display movie financial stats on the hero banner</string>
     <string name="revenue">Revenue</string>
+    <string name="show_episode_ratings">Show Episode Ratings</string>
+    <string name="show_episode_ratings_desc">Display episode ratings as a visual row below the episode list</string>
     <string name="spoiler_blur">Spoiler Blur</string>
     <string name="spoiler_blur_desc">Blur unwatched episode cards to avoid spoilers</string>
     <string name="accent_color">Accent Color</string>
@@ -1149,4 +1151,5 @@
     <string name="live_menu_move_down">Move down</string>
     <string name="live_menu_hide_category">Hide category</string>
     <string name="live_menu_unhide_category">Unhide category</string>
+    <string name="ratings">Episode Ratings</string>
 </resources>
