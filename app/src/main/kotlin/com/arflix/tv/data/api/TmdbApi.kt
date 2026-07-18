@@ -260,6 +260,7 @@ data class TmdbMovieDetails(
     @SerializedName("vote_average") val voteAverage: Float = 0f,
     val runtime: Int? = null,
     val budget: Long = 0,
+    val revenue: Long = 0,
     val genres: List<TmdbGenre> = emptyList(),
     val status: String? = null,
     val adult: Boolean = false,

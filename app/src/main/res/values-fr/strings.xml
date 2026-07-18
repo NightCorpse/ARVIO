@@ -128,7 +128,7 @@
     <string name="skip_profile">Ignorer la sélection de profil</string>
     <string name="oled_black_background">Fond noir OLED</string>
     <string name="clock_format">Format de l’heure</string>
-    <string name="show_budget">Afficher le budget sur l’accueil</string>
+    <string name="show_budget">Afficher le Budget / les Recettes</string>
     <string name="show_loading_stats">Afficher les stats de chargement</string>
     <string name="volume_boost">Amplification du volume</string>
     <string name="dns_provider">Fournisseur DNS</string>
@@ -181,7 +181,8 @@
     <string name="skip_profile_desc">Charge auto. le dernier profil utilisé au redémarrage</string>
     <string name="oled_black_background_desc">Utilisez des fonds noir pur pour les écrans OLED</string>
     <string name="clock_format_desc">Choisissez le format 12 h ou 24 h</string>
-    <string name="show_budget_desc">Affiche le budget du film dans la bannière hero de l’accueil</string>
+    <string name="show_budget_desc">Affiche les données financières du film sur l\'accueil</string>
+    <string name="revenue">Recettes</string>
     <string name="spoiler_blur">Flou anti-spoiler</string>
     <string name="spoiler_blur_desc">Floutez les cartes d’épisodes non vus pour éviter les spoilers</string>
     <string name="accent_color">Couleur d’accentuation</string>
