@@ -1986,7 +1986,9 @@ class PlayerViewModel @Inject constructor(
      *  their streams keep the order the addon returned them in instead of being re-sorted. */
     private fun keepsOwnStreamOrder(stream: StreamSource): Boolean =
         stream.addonName.contains("aiostream", ignoreCase = true) ||
-            stream.addonId.contains("aiostream", ignoreCase = true)
+            stream.addonId.contains("aiostream", ignoreCase = true) ||
+            stream.addonName.contains("torrentio", ignoreCase = true) ||
+            stream.addonId.contains("torrentio", ignoreCase = true)
 
     private fun sortStreamsByQualityAndSize(
         streams: List<StreamSource>,
