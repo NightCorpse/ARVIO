@@ -1269,33 +1269,42 @@ fun PlayerScreen(
                                 for (i in 0 until group.length) {
                                     val format = group.getTrackFormat(i)
                                     val formatTrackId = format.id?.trim().orEmpty()
-                                    // ExoPlayer prefixes external subtitle IDs with "{periodIndex}:"
-                                    // (e.g. "1:189618" for an external sub whose id we set to "189618").
-                                    // Fall back to matching by the bare id after the last colon.
-                                    val matched = if (formatTrackId.isNotBlank()) {
-                                        subtitleByTrackId[formatTrackId]
-                                            ?: subtitleByTrackId[formatTrackId.substringAfterLast(':')]
+                                    // A track we side-loaded carries the addon prefix (ExoPlayer may
+                                    // prepend "{periodIndex}:" → e.g. "0:arvio-addon-sub:prov|id").
+                                    // Anything WITHOUT the prefix is a genuine muxed/built-in track —
+                                    // deterministic, no fuzzy label/lang guessing.
+                                    val isAddon = formatTrackId.contains(ADDON_SUB_ID_PREFIX)
+                                    val matched = if (isAddon) {
+                                        // Colon-safe: key off our prefix, never the last ':' — addon
+                                        // ids can themselves contain colons (e.g. GTSubs "9892399:he").
+                                        // substringAfter also drops ExoPlayer's leading "periodIndex:".
+                                        subtitleByTrackId[formatTrackId.substringAfter(ADDON_SUB_ID_PREFIX)]
                                     } else {
-                                        latestUiState.subtitles.firstOrNull { candidate ->
-                                            !candidate.isEmbedded &&
-                                                candidate.label.equals(format.label, ignoreCase = true) &&
-                                                candidate.lang.equals(format.language ?: candidate.lang, ignoreCase = true)
-                                        }
+                                        null
                                     }
                                     val lang = format.language ?: matched?.lang ?: "und"
                                     val label = format.label ?: matched?.label ?: getFullLanguageName(lang)
-                                    val isExternal = matched?.url?.isNotBlank() == true
-                                    val isForced = format.selectionFlags and C.SELECTION_FLAG_FORCED != 0
+                                    // Forced/signage detection: the container flag OR a name hint —
+                                    // release groups often ship promo/"songs & signs" tracks without
+                                    // setting the flag, so the name is a second signal.
+                                    val trackTexts = listOfNotNull(format.label, format.language, format.id)
+                                    val isForced = (format.selectionFlags and C.SELECTION_FLAG_FORCED != 0) ||
+                                        trackTexts.any { it.contains("forced", ignoreCase = true) } ||
+                                        trackTexts.any { it.contains("songs", ignoreCase = true) && it.contains("sign", ignoreCase = true) }
                                     // Image-based subtitle tracks (PGS/VOBSUB/DVB) carry no text — they
                                     // can't be AI-translated, so flag them to exclude as a translation source.
                                     val isBitmap = isBitmapSubtitleMime(format.sampleMimeType)
                                     textTracks.add(Subtitle(
-                                        id = matched?.id ?: formatTrackId.ifBlank { "embedded_${groupIndex}_$i" },
-                                        url = matched?.url.orEmpty(),
+                                        id = if (isAddon) {
+                                            matched?.id ?: formatTrackId.substringAfter(ADDON_SUB_ID_PREFIX)
+                                        } else {
+                                            formatTrackId.ifBlank { "embedded_${groupIndex}_$i" }
+                                        },
+                                        url = if (isAddon) matched?.url.orEmpty() else "",
                                         lang = lang,
                                         label = label,
-                                        provider = matched?.provider.orEmpty(),
-                                        isEmbedded = !isExternal,
+                                        provider = if (isAddon) matched?.provider.orEmpty() else "",
+                                        isEmbedded = !isAddon,
                                         groupIndex = groupIndex,
                                         trackIndex = i,
                                         isForced = isForced,
@@ -1826,6 +1835,9 @@ fun PlayerScreen(
         // track id as the attached remote entry (subtitleTrackId never hashes an id-carrying
         // sub's URL).
         if (latestUiState.subtitlePreloadEnabled) {
+            // Match on the base id AFTER our prefix — colon-safe (addon ids may contain colons) and
+            // it strips ExoPlayer's leading "periodIndex:". Exact (not contains) so a base id can't
+            // mis-match its own "…#ofs" offset variant.
             val targetTrackId = subtitleTrackId(subtitle)
             repeat(2) { attempt ->
                 val groups = exoPlayer.currentTracks.groups
@@ -1835,7 +1847,7 @@ fun PlayerScreen(
                     for (ti in 0 until group.length) {
                         val fid = group.getTrackFormat(ti).id?.trim().orEmpty()
                         val matches = fid.isNotBlank() &&
-                            (fid == targetTrackId || fid.substringAfterLast(':') == targetTrackId)
+                            fid.substringAfter(ADDON_SUB_ID_PREFIX) == targetTrackId
                         if (matches) {
                             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                                 .buildUpon()
@@ -1908,7 +1920,7 @@ fun PlayerScreen(
                         for (ti in 0 until group.length) {
                             val fid = group.getTrackFormat(ti).id?.trim().orEmpty()
                             val matches = fid.isNotBlank() &&
-                                (fid == targetTrackId || fid.substringAfterLast(':') == targetTrackId)
+                                fid.substringAfter(ADDON_SUB_ID_PREFIX) == targetTrackId
                             if (matches) {
                                 exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                                     .buildUpon()
@@ -3443,7 +3455,7 @@ fun PlayerScreen(
                                     val idx = subtitleGroups.indexOfFirst { (name, _) -> name.equals(langName, ignoreCase = true) }
                                     subtitleLangIndex = if (idx >= 0) idx + 1 else 0
                                     subtitleTrackIndex = subtitleGroups.getOrNull(subtitleLangIndex - 1)?.second
-                                        ?.indexOfFirst { (_, sub) -> sub.id == selected.id }?.coerceAtLeast(0) ?: 0
+                                        ?.indexOfFirst { (_, sub) -> isSameSubtitleTrack(selected, sub.id) }?.coerceAtLeast(0) ?: 0
                                 }
                                 showSubtitleMenu = true
                                 // Move focus to container so all D-pad keys go to the menu handler
@@ -4693,7 +4705,7 @@ private fun SubtitleMenu(
                                             (isAiTranslating || isFindingBestMatch) && aiTargetLanguageName.isNotBlank() &&
                                                 langName.equals(aiTargetLanguageName, ignoreCase = true) -> true
                                             else -> selectedSubtitle != null &&
-                                                items.any { (_, sub) -> sub.id == selectedSubtitle.id }
+                                                items.any { (_, sub) -> isSameSubtitleTrack(selectedSubtitle, sub.id) }
                                         }
                                     )
                                 }
@@ -4768,17 +4780,25 @@ private fun SubtitleMenu(
                                     itemsIndexed(selectedGroup.second) { idx, (_, subtitle) ->
                                         val score = subtitleMatchScore(streamSource, subtitle)
                                         val langName = getFullLanguageName(subtitle.lang)
-                                        val mainLabel = if (score > 0) "$langName ($score%)" else langName
+                                        val offsetNote = matchedOffsetMsFor(selectedSubtitle, subtitle.id)
+                                            ?.let { " · ${formatMatchOffset(it)}" } ?: ""
+                                        // Built-in tracks show no match % — muxed is assumed synced,
+                                        // so a fake 100% is misleading; only addon subs carry a real score.
+                                        val mainLabel = (if (!subtitle.isEmbedded && score > 0) "$langName ($score%)" else langName) + offsetNote
                                         val badge: String?
                                         val detail: String?
                                         if (subtitle.isEmbedded && subtitle.url.isBlank()) {
                                             val langFullName = getFullLanguageName(subtitle.lang)
                                             val trackLabel = subtitle.label.takeIf { it.isNotBlank() &&
                                                 !it.equals(langFullName, ignoreCase = true) }
-                                            badge = if (trackLabel != null) "Built-in · $trackLabel" else "Built-in"
+                                            badge = listOfNotNull(
+                                                "Built-in", trackLabel, if (subtitle.isForced) "Forced" else null
+                                            ).joinToString(" · ")
                                             detail = null
                                         } else {
-                                            badge = subtitle.provider.ifBlank { null }
+                                            badge = listOfNotNull(
+                                                subtitle.provider.ifBlank { null }, if (subtitle.isForced) "Forced" else null
+                                            ).joinToString(" · ").ifBlank { null }
                                             detail = subtitle.id
                                                 .replace(PlayerScreenRegexes.BRACKET_REGEX, "").trim()
                                                 .ifBlank { subtitle.id }
@@ -4789,7 +4809,7 @@ private fun SubtitleMenu(
                                             label = mainLabel,
                                             subtitle = badge,
                                             subtitleDetail = detail,
-                                            isSelected = !isAiTranslating && !isLiveAudioTranslating && selectedSubtitle?.id == subtitle.id,
+                                            isSelected = !isAiTranslating && !isLiveAudioTranslating && isSameSubtitleTrack(selectedSubtitle, subtitle.id),
                                             isFocused = subtitlePanelFocus == 1 && subtitleTrackIndex == itemIdx,
                                             onClick = { /* D-pad only */ }
                                         )
@@ -5067,20 +5087,26 @@ private fun SubtitleMenu(
                                 item(key = "mobile_${sub.id}") {
                                     val score = subtitleMatchScore(streamSource, sub)
                                     val langFullName = getFullLanguageName(sub.lang)
-                                    val displayName = if (score > 0) "$langFullName ($score%)" else langFullName
+                                    val offsetNote = matchedOffsetMsFor(selectedSubtitle, sub.id)
+                                        ?.let { " · ${formatMatchOffset(it)}" } ?: ""
+                                    // No fake % on built-in tracks; only addon subs carry a real score.
+                                    val displayName = (if (!sub.isEmbedded && score > 0) "$langFullName ($score%)" else langFullName) + offsetNote
                                     val description = when {
                                         sub.isEmbedded && sub.url.isBlank() -> {
                                             val trackLabel = sub.label.takeIf { it.isNotBlank() &&
                                                 !it.equals(langFullName, ignoreCase = true) }
-                                            if (trackLabel != null) "Built-in · $trackLabel" else "Built-in"
+                                            listOfNotNull(
+                                                "Built-in", trackLabel, if (sub.isForced) "Forced" else null
+                                            ).joinToString(" · ")
                                         }
-                                        sub.provider.isNotBlank() -> sub.provider
-                                        else -> null
+                                        else -> listOfNotNull(
+                                            sub.provider.ifBlank { null }, if (sub.isForced) "Forced" else null
+                                        ).joinToString(" · ").ifBlank { null }
                                     }
                                     MobileTrackItem(
                                         name = displayName,
                                         description = description,
-                                        isSelected = !isAiTranslating && !isLiveAudioTranslating && selectedSubtitle?.id == sub.id,
+                                        isSelected = !isAiTranslating && !isLiveAudioTranslating && isSameSubtitleTrack(selectedSubtitle, sub.id),
                                         onClick = { onSelectSubtitle(originalIndex + 1) }
                                     )
                                     Box(
@@ -5418,6 +5444,34 @@ private fun detectAudioCodecLabel(codec: String?, trackLabel: String?): String? 
 // subs at once and bare numeric ids can collide across providers. '|' separator, never ':' —
 // ExoPlayer prefixes side-loaded format ids with "periodIndex:" and matching strips at the
 // last ':'.
+// Stamped onto the track id of every EXTERNAL (addon / side-loaded) subtitle we attach to the
+// player. Detection is then deterministic: a text track whose format id carries this prefix is one
+// we injected (external); anything without it is a genuine muxed (in-container / built-in) track —
+// no fuzzy label/lang matching that could misclassify. Ends with ':' so the existing selection
+// match (which strips at the last ':', past ExoPlayer's "periodIndex:") still resolves the base id.
+private const val ADDON_SUB_ID_PREFIX = "arvio-addon-sub:"
+
+// Marker appended to a served subtitle's id when a constant-offset rescue was baked in
+// ("…#ofs2000"). Kept in sync with PlayerViewModel.MATCH_OFFSET_ID_MARKER.
+private const val MATCH_OFFSET_ID_MARKER = "#ofs"
+
+/** A subtitle id with any offset-rescue marker stripped. */
+private fun subtitleBaseId(id: String): String = id.substringBefore(MATCH_OFFSET_ID_MARKER)
+
+/** True when [selected] is [rowId]'s track, ignoring an offset marker on either side. */
+private fun isSameSubtitleTrack(selected: Subtitle?, rowId: String): Boolean =
+    selected != null && subtitleBaseId(selected.id) == subtitleBaseId(rowId)
+
+/** The baked-in rescue offset (ms) when [selected] is [rowId]'s shifted copy, else null. */
+private fun matchedOffsetMsFor(selected: Subtitle?, rowId: String): Long? {
+    if (!isSameSubtitleTrack(selected, rowId)) return null
+    return selected!!.id.substringAfter(MATCH_OFFSET_ID_MARKER, "").toLongOrNull()?.takeIf { it != 0L }
+}
+
+/** "+2.0s" / "-1.5s". */
+private fun formatMatchOffset(ms: Long): String =
+    (if (ms >= 0) "+" else "-") + String.format(java.util.Locale.US, "%.1f", kotlin.math.abs(ms) / 1000.0) + "s"
+
 private fun subtitleTrackId(subtitle: Subtitle): String {
     val explicit = subtitle.id.trim()
     if (explicit.isNotBlank()) {
@@ -5462,7 +5516,7 @@ private fun buildExternalSubtitleConfigurations(subtitles: List<Subtitle>): List
             val normalizedUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
             runCatching {
                 MediaItem.SubtitleConfiguration.Builder(Uri.parse(normalizedUrl))
-                    .setId(subtitleTrackId(subtitle))
+                    .setId(ADDON_SUB_ID_PREFIX + subtitleTrackId(subtitle))
                     .setMimeType(subtitleMimeTypeFromUrl(normalizedUrl))
                     .setLanguage(subtitle.lang)
                     .setLabel(subtitle.label)
