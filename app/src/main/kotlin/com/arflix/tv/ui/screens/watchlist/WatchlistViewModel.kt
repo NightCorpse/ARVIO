@@ -206,8 +206,35 @@ class WatchlistViewModel @Inject constructor(
     private val watchHistoryRepository: WatchHistoryRepository,
     private val simklAuthManager: SimklAuthManager,
     private val simklSyncService: SimklSyncService,
-    private val profileManager: ProfileManager
+    private val profileManager: ProfileManager,
+    private val streamRepository: com.arflix.tv.data.repository.StreamRepository
 ) : ViewModel() {
+    private val _filesState = MutableStateFlow(AddonLibraryFilesState())
+    val filesState = _filesState.asStateFlow()
+    private var filesJob: Job? = null
+
+    fun openLibraryFiles(item: MediaItem) {
+        val addonId = item.addonLibraryAddonId ?: return
+        val itemId = item.addonLibraryItemId ?: return
+        filesJob?.cancel()
+        _filesState.value = AddonLibraryFilesState(item = item, isLoading = true)
+        filesJob = viewModelScope.launch {
+            try {
+                val meta = streamRepository.getAddonMeta(addonId, "other", itemId)
+                    ?: error("Library item unavailable")
+                _filesState.value = AddonLibraryFilesState(item = item,
+                    files = meta.videos.orEmpty().filter { !it.id.isNullOrBlank() }.distinctBy { it.id })
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                _filesState.value = AddonLibraryFilesState(item = item, error = "Could not load files")
+            }
+        }
+    }
+
+    fun closeLibraryFiles() {
+        filesJob?.cancel()
+        _filesState.value = AddonLibraryFilesState()
+    }
     private val _uiState = MutableStateFlow(WatchlistUiState())
     val uiState: StateFlow<WatchlistUiState> = _uiState.asStateFlow()
 

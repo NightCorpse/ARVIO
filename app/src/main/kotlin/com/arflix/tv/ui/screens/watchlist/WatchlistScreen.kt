@@ -78,6 +78,9 @@ fun WatchlistScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val filesState by viewModel.filesState.collectAsStateWithLifecycle()
+    AddonLibraryFilesDialog(filesState, onDismiss = viewModel::closeLibraryFiles,
+        onSelect = { android.widget.Toast.makeText(context, "Playback is coming in the next build", android.widget.Toast.LENGTH_SHORT).show() })
     val servers by viewModel.libraryState.collectAsStateWithLifecycle()
     val logos by viewModel.logoUrls.collectAsStateWithLifecycle()
     val touch = LocalDeviceType.current.isTouchDevice()
@@ -261,7 +264,7 @@ fun WatchlistScreen(
                                 onFocused = { viewModel.saveFocusState(0, index); if(!touch) scrollScope.launch { reveal.bringIntoView() } },
                                  onClick = {
                                      if (item.addonLibraryItemId == null) onNavigateToDetails(item.mediaType, item.id)
-                                     else android.widget.Toast.makeText(context, "File selection is coming in the next build", android.widget.Toast.LENGTH_SHORT).show()
+                                     else viewModel.openLibraryFiles(item)
                                  },
                                 onLongClick = if(state.selectedSourceId == WatchlistSourceItem.MyWatchlist.id && !serverMode) ({ viewModel.removeFromWatchlist(item) }) else null)
                             }
