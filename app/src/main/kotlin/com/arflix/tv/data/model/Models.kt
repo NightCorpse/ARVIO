@@ -73,6 +73,9 @@ data class MediaItem(
     val homeServerSourceRef: String? = null,
     val homeServerProvider: String? = null,
     val homeServerImdbId: String? = null,
+    // Addon library identity is independent of TMDB and episode coordinates.
+    val addonLibraryItemId: String? = null,
+    val addonLibraryAddonId: String? = null,
 ) : Serializable
 
 enum class MediaType {
