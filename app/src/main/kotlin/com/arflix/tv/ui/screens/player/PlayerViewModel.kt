@@ -1,5 +1,7 @@
 package com.arflix.tv.ui.screens.player
 
+import com.arflix.tv.data.model.sortedPreservingTorrentioOrder
+
 import android.content.Context
 import android.util.Log
 import androidx.annotation.StringRes
@@ -2755,7 +2757,7 @@ class PlayerViewModel @Inject constructor(
         streams: List<StreamSource>,
         preferredLanguage: String
     ): List<StreamSource> {
-        return streams.sortedWith(
+        return streams.sortedPreservingTorrentioOrder(
             compareBy<StreamSource> { streamRepository.getPlaybackHostHealthPenalty(it) }
                 .thenBy { addonOrderIndex(it) }
                 .thenByDescending { qualityScoreForAutoPlay(it) }

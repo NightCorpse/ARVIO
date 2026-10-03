@@ -1,5 +1,7 @@
 package com.arflix.tv.ui.screens.details
 
+import com.arflix.tv.data.model.sortedPreservingTorrentioOrder
+
 import android.content.Context
 import android.util.Log
 import com.arflix.tv.R
@@ -1605,7 +1607,9 @@ class DetailsViewModel @Inject constructor(
     }
 
     private fun sortPlayableStreamsFirst(streams: List<StreamSource>): List<StreamSource> {
-        return streams.sortedBy { if (isPendingDebridStream(it)) 1 else 0 }
+        return streams.sortedPreservingTorrentioOrder(
+            compareBy { if (isPendingDebridStream(it)) 1 else 0 }
+        )
     }
 
     /**
