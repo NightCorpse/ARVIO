@@ -111,7 +111,8 @@ private suspend fun walkArmKitsuIds(
 @Singleton
 class AnimeMapper @Inject constructor(
     private val streamApi: StreamApi,
-    private val tmdbApi: TmdbApi
+    private val tmdbApi: TmdbApi,
+    @javax.inject.Named("armMapping") private val armMappingApi: StreamApi
 ) {
     private val TAG = "AnimeMapper"
 
@@ -689,7 +690,7 @@ class AnimeMapper @Inject constructor(
     private suspend fun fetchArmMapping(tmdbId: Int): List<ArmMappingEntry>? {
         return try {
             val url = "https://arm.haglund.dev/api/v2/themoviedb?id=$tmdbId"
-            val response = streamApi.getArmMappingByTmdb(url)
+            val response = armMappingApi.getArmMappingByTmdb(url)
 
             val entries = response.filter { it.kitsu != null }
 

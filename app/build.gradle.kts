@@ -418,6 +418,7 @@ ksp {
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.conscrypt:conscrypt-android:2.5.2")
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     // Cloudstream/NiceHttp require OkHttp 5; its Android initializer is flavor-specific.
@@ -507,6 +508,11 @@ ksp {
     add("sideloadImplementation", "org.webjars.npm:crypto-js:4.2.0")
 
     // Unit Testing
+    // Local JVM tests need host-native Conscrypt, not Android JNI binaries.
+    configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
+        exclude(group = "org.conscrypt", module = "conscrypt-android")
+    }
+    testImplementation("org.conscrypt:conscrypt-openjdk-uber:2.5.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     testImplementation("io.mockk:mockk:1.13.8")

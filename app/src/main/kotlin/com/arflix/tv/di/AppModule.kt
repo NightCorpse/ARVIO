@@ -223,7 +223,7 @@ object AppModule {
     fun provideAniSkipRetrofit(okHttpClient: OkHttpClient): Retrofit {
         return Retrofit.Builder()
             .baseUrl("https://api.aniskip.com/v2/")
-            .client(okHttpClient)
+            .client(com.arflix.tv.network.tls13CompatibleClient(okHttpClient))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
@@ -242,7 +242,7 @@ object AppModule {
     fun provideArmRetrofit(okHttpClient: OkHttpClient): Retrofit {
         return Retrofit.Builder()
             .baseUrl("https://arm.haglund.dev/api/v2/")
-            .client(okHttpClient)
+            .client(com.arflix.tv.network.tls13CompatibleClient(okHttpClient))
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
@@ -252,6 +252,14 @@ object AppModule {
     @JvmStatic
     fun provideArmApi(@Named("arm") retrofit: Retrofit): ArmApi {
         return retrofit.create(ArmApi::class.java)
+    }
+
+    @Provides
+    @Singleton
+    @JvmStatic
+    @Named("armMapping")
+    fun provideArmMappingApi(@Named("arm") retrofit: Retrofit): StreamApi {
+        return retrofit.create(StreamApi::class.java)
     }
 
     @Provides
