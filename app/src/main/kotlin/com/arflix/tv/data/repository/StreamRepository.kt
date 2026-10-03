@@ -1513,7 +1513,13 @@ class StreamRepository @Inject constructor(
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 null
             }
-            if (meta != null) return@withContext meta
+            if (meta != null) return@withContext if (mediaType == "other") {
+                meta.copy(videos = meta.videos?.map { video ->
+                    video.copy(streams = video.streams?.map { stream ->
+                        stream.copy(url = resolveAddonLibraryUrl(stream.url, baseUrl))
+                    })
+                })
+            } else meta
         }
         null
     }

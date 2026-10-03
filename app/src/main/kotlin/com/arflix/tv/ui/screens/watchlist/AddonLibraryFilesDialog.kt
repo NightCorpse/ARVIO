@@ -22,7 +22,7 @@ internal fun AddonLibraryFilesDialog(
 ) {
     val item = state.item ?: return
     val entries = state.files.map { file ->
-        val stream = file.streams.orEmpty().firstOrNull()
+        val stream = file.streams.orEmpty().firstOrNull { !it.url.isNullOrBlank() }
         file to StreamSource(
             source = file.title.orEmpty().ifBlank { file.id.orEmpty() },
             addonName = "Library",
