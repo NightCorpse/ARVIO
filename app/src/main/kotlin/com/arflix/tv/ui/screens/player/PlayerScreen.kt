@@ -349,6 +349,7 @@ fun PlayerScreen(
     preferredBingeGroup: String? = null,
     startPositionMs: Long? = null,
     isLiveStream: Boolean = false,
+    isAddonLibrary: Boolean = false,
     viewModel: PlayerViewModel = hiltViewModel(),
     onBack: () -> Unit = {},
     onPlayNext: (EpisodeIdentity, String?, String?, String?) -> Unit = { _, _, _, _ -> }
@@ -874,7 +875,8 @@ fun PlayerScreen(
             preferredSourceName = preferredSourceName,
             preferredBingeGroup = preferredBingeGroup,
             startPositionMs = startPositionMs,
-            isLiveStreamPlayback = isLiveStream
+            isLiveStreamPlayback = isLiveStream,
+            isAddonLibraryPlayback = isAddonLibrary
         )
     }
 

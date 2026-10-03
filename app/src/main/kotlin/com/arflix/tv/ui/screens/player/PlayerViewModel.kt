@@ -337,6 +337,7 @@ class PlayerViewModel @Inject constructor(
     private var currentAddonOrderedIds: List<String> = emptyList()
     private var currentInstalledAddons: List<Addon> = emptyList()
     private var currentIsLiveStreamPlayback: Boolean = false
+    private var currentIsAddonLibraryPlayback: Boolean = false
     private var autoPlayMinimumQuality: Int = 0
     private var autoPlayLimits = com.arflix.tv.data.model.AutoplayLimits()
     private var lastScrobbleTime: Long = 0
@@ -693,6 +694,7 @@ class PlayerViewModel @Inject constructor(
         preferredBingeGroup: String?,
         startPositionMs: Long?,
         isLiveStreamPlayback: Boolean = false,
+        isAddonLibraryPlayback: Boolean = false,
         forceRefresh: Boolean = false,
         airDate: String? = null
     ) {
@@ -716,6 +718,7 @@ class PlayerViewModel @Inject constructor(
         currentPreferredSourceName = preferredSourceName?.trim()?.takeIf { it.isNotBlank() }
         currentPreferredBingeGroup = preferredBingeGroup?.trim()?.takeIf { it.isNotBlank() }
         currentIsLiveStreamPlayback = isLiveStreamPlayback
+        currentIsAddonLibraryPlayback = isAddonLibraryPlayback
         autoPlayMinimumQuality = 0
         autoPlayLimits = com.arflix.tv.data.model.AutoplayLimits()
         playbackSessionStartTime = System.currentTimeMillis()
@@ -938,7 +941,7 @@ class PlayerViewModel @Inject constructor(
             // If a playable stream URL was provided, use it directly. An unresolved HubCloud
             // page deliberately falls through to normal source discovery instead of playing HTML.
             if (effectiveProvidedStreamUrl != null) {
-                val resumeData = resolveResumeData(
+                val resumeData = if (isAddonLibraryPlayback) ResumeData(0L) else resolveResumeData(
                     mediaType = mediaType,
                     mediaId = mediaId,
                     seasonNumber = seasonNumber,
@@ -994,6 +997,15 @@ class PlayerViewModel @Inject constructor(
                     selectedStreamUrl = resolvedProvidedUrl,
                     savedPosition = resumeData.positionMs
                 )
+                if (isAddonLibraryPlayback) {
+                    _uiState.value = _uiState.value.copy(
+                        title = preferredSourceName.orEmpty(),
+                        sourceSearchActive = false,
+                        savedPosition = 0L,
+                        isLoadingSubtitles = false
+                    )
+                    return@launch
+                }
                 prefetchSubtitleIndex(onlyForAutoScan = true)
                 audioSyncOnStream()
                 // NOTE: these background children share the load job — an uncaught exception in
@@ -7675,6 +7687,7 @@ class PlayerViewModel @Inject constructor(
         isPlaying: Boolean,
         playbackState: Int
     ): Job? {
+        if (currentIsAddonLibraryPlayback) return null
         if (duration <= 0) return null
 
         // On pause/stop, replace an in-flight periodic save. During normal playback,

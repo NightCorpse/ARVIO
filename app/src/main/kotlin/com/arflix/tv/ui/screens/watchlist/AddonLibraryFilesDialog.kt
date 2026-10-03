@@ -18,7 +18,7 @@ data class AddonLibraryFilesState(
 internal fun AddonLibraryFilesDialog(
     state: AddonLibraryFilesState,
     onDismiss: () -> Unit,
-    onSelect: (StremioLibraryVideo) -> Unit
+    onSelect: (StreamSource) -> Unit
 ) {
     val item = state.item ?: return
     val entries = state.files.map { file ->
@@ -45,7 +45,7 @@ internal fun AddonLibraryFilesDialog(
         isLoading = state.isLoading,
         title = item.title,
         subtitle = state.error.orEmpty(),
-        onSelect = { selected -> entries.firstOrNull { it.second == selected }?.first?.let(onSelect) },
+        onSelect = onSelect,
         onClose = onDismiss
     )
     }

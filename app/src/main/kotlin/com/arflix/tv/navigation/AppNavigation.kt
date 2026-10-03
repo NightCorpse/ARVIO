@@ -89,7 +89,7 @@ sealed class Screen(val route: String) {
         }
     }
 
-    data object Player : Screen("player/{mediaType}/{mediaId}?seasonNumber={seasonNumber}&episodeNumber={episodeNumber}&tmdbSeasonNumber={tmdbSeasonNumber}&tmdbEpisodeNumber={tmdbEpisodeNumber}&kitsuId={kitsuId}&kitsuEpisodeNumber={kitsuEpisodeNumber}&imdbId={imdbId}&streamUrl={streamUrl}&preferredAddonId={preferredAddonId}&preferredSourceName={preferredSourceName}&preferredBingeGroup={preferredBingeGroup}&startPositionMs={startPositionMs}&isLiveStream={isLiveStream}") {
+    data object Player : Screen("player/{mediaType}/{mediaId}?seasonNumber={seasonNumber}&episodeNumber={episodeNumber}&tmdbSeasonNumber={tmdbSeasonNumber}&tmdbEpisodeNumber={tmdbEpisodeNumber}&kitsuId={kitsuId}&kitsuEpisodeNumber={kitsuEpisodeNumber}&imdbId={imdbId}&streamUrl={streamUrl}&preferredAddonId={preferredAddonId}&preferredSourceName={preferredSourceName}&preferredBingeGroup={preferredBingeGroup}&startPositionMs={startPositionMs}&isLiveStream={isLiveStream}&isAddonLibrary={isAddonLibrary}") {
         fun createRoute(
             mediaType: MediaType,
             mediaId: Int,
@@ -105,7 +105,8 @@ sealed class Screen(val route: String) {
             preferredSourceName: String? = null,
             preferredBingeGroup: String? = null,
             startPositionMs: Long? = null,
-            isLiveStream: Boolean = false
+            isLiveStream: Boolean = false,
+            isAddonLibrary: Boolean = false
         ): String {
             val base = "player/${mediaType.name.lowercase()}/$mediaId"
             val params = mutableListOf<String>()
@@ -122,6 +123,7 @@ sealed class Screen(val route: String) {
             preferredBingeGroup?.let { params.add("preferredBingeGroup=${java.net.URLEncoder.encode(it, "UTF-8")}") }
             startPositionMs?.let { params.add("startPositionMs=$it") }
             if (isLiveStream) params.add("isLiveStream=true")
+            if (isAddonLibrary) params.add("isAddonLibrary=true")
             return if (params.isNotEmpty()) "$base?${params.joinToString("&")}" else base
         }
     }
@@ -278,6 +280,13 @@ fun AppNavigation(
         // Watchlist screen
         composable(Screen.Watchlist.route) {
             WatchlistScreen(
+                onPlayLibraryFile = { item, stream ->
+                    navController.navigate(Screen.Player.createRoute(
+                        mediaType = MediaType.MOVIE, mediaId = item.id,
+                        streamUrl = stream.url, preferredAddonId = stream.addonId,
+                        preferredSourceName = stream.source, isAddonLibrary = true
+                    ))
+                },
                 currentProfile = currentProfile,
                 onNavigateToDetails = { mediaType, mediaId ->
                     navController.navigate(Screen.Details.createRoute(mediaType, mediaId))
@@ -600,6 +609,10 @@ fun AppNavigation(
                 navArgument("isLiveStream") {
                     type = NavType.BoolType
                     defaultValue = false
+                },
+                navArgument("isAddonLibrary") {
+                    type = NavType.BoolType
+                    defaultValue = false
                 }
             ),
             exitTransition = { ExitTransition.None },
@@ -640,6 +653,7 @@ fun AppNavigation(
                 preferredBingeGroup = preferredBingeGroup,
                 startPositionMs = startPositionMs,
                 isLiveStream = isLiveStream,
+                isAddonLibrary = backStackEntry.arguments?.getBoolean("isAddonLibrary") ?: false,
                 onBack = { navController.popBackStack() },
                 onPlayNext = { nextIdentity, nextPreferredAddonId, nextPreferredSourceName, nextPreferredBingeGroup ->
                     // Navigate to next episode

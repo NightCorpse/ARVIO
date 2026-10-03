@@ -69,6 +69,7 @@ internal fun librarySources(sources: List<WatchlistSourceItem>, section: Library
 @OptIn(androidx.tv.material3.ExperimentalTvMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun WatchlistScreen(
+    onPlayLibraryFile: (com.arflix.tv.data.model.MediaItem, com.arflix.tv.data.model.StreamSource) -> Unit = { _, _ -> },
     viewModel: WatchlistViewModel = hiltViewModel(),
     currentProfile: Profile? = null,
     onNavigateToDetails: (MediaType, Int) -> Unit = { _, _ -> },
@@ -80,7 +81,13 @@ fun WatchlistScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val filesState by viewModel.filesState.collectAsStateWithLifecycle()
     AddonLibraryFilesDialog(filesState, onDismiss = viewModel::closeLibraryFiles,
-        onSelect = { android.widget.Toast.makeText(context, "Playback is coming in the next build", android.widget.Toast.LENGTH_SHORT).show() })
+        onSelect = { stream ->
+            val item = filesState.item
+            if (item != null && !stream.url.isNullOrBlank()) {
+                viewModel.closeLibraryFiles()
+                onPlayLibraryFile(item, stream)
+            } else android.widget.Toast.makeText(context, "No playable URL available", android.widget.Toast.LENGTH_SHORT).show()
+        })
     val servers by viewModel.libraryState.collectAsStateWithLifecycle()
     val logos by viewModel.logoUrls.collectAsStateWithLifecycle()
     val touch = LocalDeviceType.current.isTouchDevice()
