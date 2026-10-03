@@ -529,7 +529,8 @@ fun MediaCard(
                 val tvSeriesLabel = stringResource(R.string.component_label_tv_series)
                 val movieLabel = stringResource(R.string.movie)
                 val mediaLabel = stringResource(R.string.component_label_media)
-                val subtitle = remember(item.subtitle, item.releaseDate, item.year, item.mediaType, tvSeriesLabel, movieLabel, mediaLabel) {
+                val subtitle = remember(item.subtitle, item.releaseDate, item.year, item.mediaType, item.addonLibraryItemId, tvSeriesLabel, movieLabel, mediaLabel) {
+                    if (item.addonLibraryItemId != null) return@remember ""
                     val release = item.releaseDate?.takeIf { it.isNotBlank() }
                         ?: item.year.takeIf { it.isNotBlank() }
                     release
