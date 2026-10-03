@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="stream_open_external_player">Abrir com player externo</string>
+    <string name="stream_external_player_unavailable">Nenhum player compatível ou link HTTP/HTTPS direto disponível.</string>
     <string name="app_name">ARVIO</string>
     <string name="now_playing">REPRODUZINDO AGORA</string>
 

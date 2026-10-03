@@ -246,6 +246,37 @@ fun StreamSelector(
     onClose: () -> Unit = {}
 ) {
     val isMobile = LocalDeviceType.current.isTouchDevice()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var externalPlayerSource by remember { mutableStateOf<StreamSource?>(null) }
+    var sourceLongPressHandled by remember { mutableStateOf(false) }
+    val externalPlayerLabel = stringResource(R.string.stream_open_external_player)
+    val externalPlayerUnavailable = stringResource(R.string.stream_external_player_unavailable)
+    LaunchedEffect(isVisible) {
+        if (!isVisible) externalPlayerSource = null
+        sourceLongPressHandled = false
+    }
+    externalPlayerSource?.let { stream ->
+        ExternalPlayerContextMenu(
+            title = title.ifBlank { stream.source },
+            onDismiss = { externalPlayerSource = null },
+            onOpen = {
+                    externalPlayerSource = null
+                    val uri = stream.url?.let(android.net.Uri::parse)
+                    if (uri != null && (uri.scheme == "https" || uri.scheme == "http")) {
+                        try {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                .setDataAndType(uri, "video/*")
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(android.content.Intent.createChooser(intent, externalPlayerLabel))
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            android.widget.Toast.makeText(context, externalPlayerUnavailable, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        android.widget.Toast.makeText(context, externalPlayerUnavailable, android.widget.Toast.LENGTH_LONG).show()
+                    }
+            }
+        )
+    }
     val isRtlLayoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
 
     val configuration = LocalConfiguration.current
@@ -571,6 +602,19 @@ fun StreamSelector(
                         }
                     )
                     .onKeyEvent { event ->
+                    if (!isMobile && (event.key == Key.Enter || event.key == Key.DirectionCenter) && focusZone == "streams") {
+                        if (event.type == KeyEventType.KeyDown) {
+                            if (event.nativeKeyEvent.repeatCount == 0) sourceLongPressHandled = false
+                            if (event.nativeKeyEvent.repeatCount > 0 && !sourceLongPressHandled) {
+                                sourceLongPressHandled = true
+                                externalPlayerSource = flatStreams.getOrNull(focusedIndex)
+                            }
+                        } else if (event.type == KeyEventType.KeyUp) {
+                            if (!sourceLongPressHandled) flatStreams.getOrNull(focusedIndex)?.let(onSelect)
+                            sourceLongPressHandled = false
+                        }
+                        return@onKeyEvent true
+                    }
                     if (event.type == KeyEventType.KeyDown) {
                         val isRtl = isRtlLayoutDirection
                         val actualKey = event.key

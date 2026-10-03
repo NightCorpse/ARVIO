@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="stream_open_external_player">Open with external player</string>
+    <string name="stream_external_player_unavailable">No compatible player or direct HTTP/HTTPS link available.</string>
     <string name="live_sports_source_count">Sources: %1$d</string>
     <string name="live_sports_addon_sources">Broadcast listed by add-on</string>
     <string name="live_sports_addon_retry">No sources returned. Select to retry.</string>
@@ -1854,4 +1856,3 @@
     <string name="settings_collections_installed">Installed collections: %1$s (%2$d rails)</string>
     <string name="catalog_collections_invalid">This is not a valid collections file (Nuvio collections export JSON expected)</string>
 </resources>
-

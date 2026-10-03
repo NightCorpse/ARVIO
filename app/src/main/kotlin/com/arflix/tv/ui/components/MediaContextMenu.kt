@@ -344,6 +344,65 @@ fun MediaContextMenu(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
+internal fun ExternalPlayerContextMenu(
+    title: String,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val focusRequester = remember { FocusRequester() }
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Column(
+                modifier = Modifier
+                    .padding(top = 110.dp)
+                    .width(320.dp)
+                    .background(BackgroundCard, RoundedCornerShape(14.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                    .focusRequester(focusRequester)
+                    .onPreviewKeyEvent { event ->
+                        when (event.key) {
+                            Key.Enter, Key.DirectionCenter -> {
+                                if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) onOpen()
+                                true
+                            }
+                            Key.Back, Key.Escape -> {
+                                if (event.type == KeyEventType.KeyDown) onDismiss()
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                    .focusable()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(title, style = ArflixTypography.sectionTitle, color = TextPrimary, maxLines = 2)
+                Spacer(Modifier.height(14.dp))
+                Box(Modifier.clickable(onClick = onOpen)) {
+                    ContextMenuItem(
+                        icon = Icons.Default.PlayArrow,
+                        label = stringResource(R.string.stream_open_external_player),
+                        isFocused = true,
+                        onClick = onOpen
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = stringResource(R.string.press_back_to_close),
+                    style = ArflixTypography.caption,
+                    color = TextSecondary.copy(alpha = 0.5f)
+                )
+            }
+        }
+        LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
 private fun ContextMenuItem(
     icon: ImageVector,
     label: String,
