@@ -2739,6 +2739,7 @@ class HomeViewModel @Inject constructor(
                 }
                 val iptvFavoritesOnHome = isIptvFavoritesOnHomeEnabled()
                 val savedCatalogs = applyIptvFavoritesPlacement(rawSavedCatalogs, iptvFavoritesOnHome)
+                    .filterNot { it.addonCatalogType == "other" }
                 currentSavedCatalogs = savedCatalogs
                 savedCatalogById.clear()
                 savedCatalogs.forEach { savedCatalogById[it.id] = it }

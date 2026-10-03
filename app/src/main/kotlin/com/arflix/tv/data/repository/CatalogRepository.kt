@@ -467,14 +467,23 @@ class CatalogRepository @Inject constructor(
         return merged
     }
 
-    suspend fun syncAddonCatalogs(addons: List<Addon>): Boolean {
+    suspend fun syncAddonCatalogs(addons: List<Addon>, restoreLibraryAddonId: String? = null): Boolean {
         val profileId = activeProfileId()
         // Debounce: skip if addon manifest state hasn't changed since last sync.
         // Includes profile ID + fields that affect the sync outcome so that
         // switching profiles, toggling addon enable-state, or manifest catalog
         // changes always trigger a fresh sync.
         val fingerprint = buildAddonFingerprint(profileId, addons)
-        if (fingerprint == lastSyncedAddonFingerprint) return false
+        if (restoreLibraryAddonId != null) {
+            val restoredIds = addons.filter { it.id == restoreLibraryAddonId }
+                .flatMap { addon -> addon.manifest?.catalogs.orEmpty().mapNotNull { catalog ->
+                    if (catalog.type.equals("other", ignoreCase = true)) buildAddonCatalogConfig(addon, catalog)?.id else null
+                } }.toSet()
+            context.settingsDataStore.edit { prefs ->
+                writeCatalogField(prefs, profileId, "hiddenAddonByProfile",
+                    gson.toJson(decodeHiddenAddon(profileId, prefs).filterNot { it in restoredIds }))
+            }
+        } else if (fingerprint == lastSyncedAddonFingerprint) return false
         lastSyncedAddonFingerprint = fingerprint
 
         val prefs = context.settingsDataStore.data.first()
@@ -687,6 +696,7 @@ class CatalogRepository @Inject constructor(
             "tv" -> "tv"
             "show" -> "show"
             "shows" -> "shows"
+            "other" -> "other"
             else -> null
         }
     }

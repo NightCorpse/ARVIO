@@ -2523,7 +2523,7 @@ class SettingsViewModel @Inject constructor(
                 val currentAddons = streamRepository.installedAddons.first()
                 val importedCatalogs = addon.manifest?.catalogs?.size ?: 0
                 runCatching {
-                    catalogRepository.syncAddonCatalogs(currentAddons)
+                    catalogRepository.syncAddonCatalogs(currentAddons, restoreLibraryAddonId = addon.id)
                 }
                 _uiState.value = _uiState.value.copy(
                     addons = currentAddons,
