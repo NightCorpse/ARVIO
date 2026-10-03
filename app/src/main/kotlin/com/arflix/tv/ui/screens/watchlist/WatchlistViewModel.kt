@@ -152,6 +152,7 @@ data class HomeLibraryUiState(
 )
 
 internal fun watchlistLogoKey(item: MediaItem): String {
+    if (item.addonLibraryItemId != null) return "addon:${item.addonLibraryAddonId}:${item.addonLibraryItemId}"
     return if (item.id > 0) {
         "tmdb:${item.mediaType.name}:${item.id}"
     } else {
@@ -160,6 +161,7 @@ internal fun watchlistLogoKey(item: MediaItem): String {
 }
 
 internal fun watchlistItemKey(item: MediaItem, index: Int): String {
+    if (item.addonLibraryItemId != null) return "addon:${item.addonLibraryAddonId}:${item.addonLibraryItemId}:$index"
     val nativeIdentity = if (item.isHomeServer || !item.homeServerItemId.isNullOrBlank()) {
         "home:${item.homeServerSourceRef.orEmpty()}:${item.homeServerItemId.orEmpty()}"
     } else {
@@ -639,7 +641,12 @@ class WatchlistViewModel @Inject constructor(
     }
 
     fun selectSource(sourceId: String) {
-        if (_uiState.value.selectedSourceId == sourceId) return
+        val nativeLibrary = (_uiState.value.sources.firstOrNull { it.id == sourceId } as? WatchlistSourceItem.Catalog)
+            ?.config?.addonCatalogType == "other"
+        if (_uiState.value.selectedSourceId == sourceId) {
+            if (nativeLibrary) loadActiveSourceItems(forceRefresh = true)
+            return
+        }
         sourceLoadJob?.cancel()
         sourceLoadMoreJob?.cancel()
         val cached = sourceItemsCache[sourceId]
@@ -655,7 +662,7 @@ class WatchlistViewModel @Inject constructor(
             hasMore = pageState.hasMore,
             isLoadingMore = false
         )
-        loadActiveSourceItems()
+        loadActiveSourceItems(forceRefresh = nativeLibrary)
     }
 
     fun saveFocusState(sectionIndex: Int, itemIndex: Int) {
@@ -940,6 +947,7 @@ class WatchlistViewModel @Inject constructor(
             }
 
             map { item ->
+                if (item.addonLibraryItemId != null) return@map item
                 val typeStr = if (item.mediaType == TV) "tv" else "movie"
                 val history = historyByKey["$typeStr:${item.id}"]
                 if (history != null) {
@@ -961,7 +969,7 @@ class WatchlistViewModel @Inject constructor(
     private fun fetchLogos(items: List<MediaItem>) = prefetchLogos(items.take(LIBRARY_LOGO_INITIAL_PREFETCH))
 
     fun prefetchLogos(items: List<MediaItem>) {
-        items.distinctBy(::watchlistLogoKey).forEach { item ->
+        items.filter { it.addonLibraryItemId == null }.distinctBy(::watchlistLogoKey).forEach { item ->
             val key = watchlistLogoKey(item)
             if (key in _logoUrls.value || !logoRequestsInFlight.add(key)) return@forEach
             viewModelScope.launch {

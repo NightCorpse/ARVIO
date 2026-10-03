@@ -1001,6 +1001,30 @@ class MediaRepository @Inject constructor(
         }
         val effectiveLimit = limit.coerceAtMost(rankedCatalogLimit - offset)
 
+        if (catalog.sourceType == CatalogSourceType.ADDON && catalog.addonCatalogType == "other") {
+            val addonId = requireNotNull(catalog.addonId)
+            val response = streamRepository.getAddonCatalogPage(
+                addonId = addonId,
+                catalogType = "other",
+                catalogId = requireNotNull(catalog.addonCatalogId),
+                skip = offset
+            )
+            val metas = response.metas ?: response.items ?: emptyList()
+            val items = metas.take(effectiveLimit).mapIndexedNotNull { index, meta ->
+                val nativeId = meta.id?.takeIf { it.isNotBlank() } ?: return@mapIndexedNotNull null
+                MediaItem(
+                    id = -(("$addonId|$nativeId".hashCode() and Int.MAX_VALUE).coerceAtLeast(1)),
+                    title = meta.name.orEmpty().ifBlank { nativeId },
+                    sourceOrder = offset + index,
+                    showPlaybackProgress = false,
+                    addonLibraryItemId = nativeId,
+                    addonLibraryAddonId = addonId
+                )
+            }
+            return@coroutineScope CategoryPageResult(items, hasMore = metas.size >= effectiveLimit && metas.isNotEmpty(),
+                nextOffset = offset + minOf(metas.size, effectiveLimit))
+        }
+
         val pageRefs: List<Pair<MediaType, Int>>
         val hasMore: Boolean
         var sourceNextOffset: Int? = null
